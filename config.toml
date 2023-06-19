@@ -1,0 +1,126 @@
+[logging]
+
+[serial]
+# The serial port device file path (i.e., /dev/ttyUSB0).
+device = "/dev/ttyUSBS0"
+
+# The serial port baud rate.
+# One of 9600, 19200, 38400, 57600, 115200, 230400 or "auto" can be specified.
+# Values other that 9600 (amp power-on default) or "auto" require the amp to already be configured to use the specified baud before mwha2mqttd starts
+# You probably want "auto".
+baud = 9600
+
+# Whether to adjust the amp and port baud rates once connected.
+# One of "off", 9600, 19200, 38400, 57600, 115200, 230400 or "max" can be specified.
+# "off" will use the specified/detected baud rate (see "baud").
+# "max" is equivalent to 230400.
+#adjust_baud = "max"
+
+# Whether to reset the device and port baud rate to the original (detected) rate on exit.
+#reset_baud = true
+
+# Serial read timeout in seconds.
+# Fractional values are supported.
+#read_timeout = 1.0
+
+# [tcp]
+# url = "raw://"
+
+
+
+
+[mqtt]
+# URL of the MQTT server.
+# 'mqtt' and 'mqtts' schemes are supported, for unencrypted and TLS-encrypted MQTT connections respectivly.
+# Websockets are currently not supported.
+# A port number can be specified to use something other than the default (1883 for 'mqtt', 8883 for 'mqtts').
+# A port number cannot be specified if srv_lookup is true (the port number comes from the SRV record).
+# A username/password can be specified if required by the server.
+# The URL path, if present, is used as a prefix to all topic names.
+# If no path is specified (i.e. no '/' is present after the host/port) the default prefix of 'mwha/' will be used.
+# Use '/' to mean no prefix. Start the path with '//' if you want all topic names to start with a slash (e.g. '//mwah/'
+# means a prefix of '/mwha/').
+# You probably want the path to end in '/' (unless you want topic names such as 'mwha_status', for which you'd use a
+# path of '/mwha_').
+# mqtt[s]://[username[:password]@]host[:port]/<topic-prefix>
+#url = "mqtt://localhost"
+#url = "mqtt://localhost/my_mwha/"  # mqtt broker on localhost, default mqtt port, topic prefix of 'my_mwha/'
+#url = "mqtt://example.com/mwha/"  # when combined with srv_lookup, will look for a _mqtt._tcp.example.com SRV record.
+url = "mqtt://localhost?client_id=mwha2mqtt"
+
+# Whether to perform a DNS query for a SRV record containing the details of an MQTT server on a domain.
+# When true the host in the MQTT URL is interpreted as a domain, and a DNS query is made for a SRV record of type
+# _mqtt._tcp ('mqtt' scheme) or _secure-mqtt._tcp ('mqtts' scheme).
+#srv_lookup = false
+
+# MQTT client ID
+#client_id = "mwha2mqtt"
+
+# Path to a file of concatenated CA certificates (in PEM format).
+# Only used for mqtts connections.
+# Can be left unset to use the system default CA.
+#ca_certs = "/path/to/cacert.pem"
+
+# Path to the client certificate file (in PEM format).
+# Only used for mqtts connections.
+# May also contain any number of CA certificates needed to establish the client certificate's authenticity.
+#client_cert = "/path/to/client_pub.pem"
+
+# Path to the client private key (in PEM format).
+# If unset, the private key will be loaded from client_cert.
+# Password protected private keys are currently not supported.
+# Only used for mqtts connections.
+#client_key = "/path/to/client.pem"
+
+# Colon ':' separated list of allowed encryption ciphers (OpenSSL format).
+#tls_ciphers = ""
+
+# Whether to validate the hostname of the MQTT server against the certificate.
+#validate_hostname = true
+
+[amp]
+# The interval between each poll to the amp for zone status information.
+# Lower values reduce the delay between adjusting zone attributes via physical keypads and MQTT clients receiving these
+# updates, but will result in increased serial traffic and more frequent MQTT messages being sent when keypads are used.
+# mwha2mqttd does not publish zone attributes that have not changed since the last publish.
+poll_interval = "1 sec"
+
+# This data is arbitrary, but can be customized so that clients (such as the mwhactl, mwhamixer and mwha-homebridge)
+# display the right values.
+#manufacturer = "Monoprice"
+#model = "MPR-6ZHMAUT"
+#serial = ""
+serial = "123"
+
+# Flag certain sources as "disabled".
+# Clients may choose to respect this value and hide and/or prevent the selection of the specified sources.
+# This setting does not prevent changing a zones' source to one of these disabled sources via MQTT, the zone keypads or
+# the hardware PA trigger (which switches all zones to source 1).
+#disabled_sources = [1, 6]
+
+[amp.sources]
+# A map of source numbers to their names and settings.
+# Valid source numbers are 1 through 6 (inclusive).
+# Sources default to a name of "Source 𝘯" (where 𝘯 is the source number), if left unspecified.
+# Sources default to enabled.
+
+1 = "Public Announcement"
+2 = "Living Room TV ARC"
+3 = "Master Bedroom TV ARC"
+4 = { name = "AirPlay", disabled = true }
+5 = "Main PC HDMI"
+6 = "Rain Machine"
+
+[amp.zones]
+# Zone naming.
+# Valid zone ids are:
+# Zone 11 through 16 are for Amp 1 (Master).
+# Zone 21 through 26 are for Amp 2 (Slave 1).
+# Zone 31 through 36 are for Amp 3 (Slave 2).
+# Zones not listed will not report status or accept adjustments via MQTT.
+11 = "Living Room"
+12 = "Study"
+13 = "Alfresco"
+14 = "Master Bedroom"
+15 = "Guest Bedroom"
+16 = "Office"
