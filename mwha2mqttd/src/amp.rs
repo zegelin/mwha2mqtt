@@ -71,20 +71,11 @@ impl Amp {
         // maybe switch to a BufReader, but this is 9600 baud serial, performance isn't really an issue.
         while !buffer.ends_with(marker) {
             let mut ch = [0; 1];
-            
-            if let Err(e) = self.port.read(&mut ch) {
-                print!("read err, expecting: ");
-                print_buffer(&marker);
-                print!("buffer: ");
-                print_buffer(&buffer);
-                println!();
-                return Err(e.into());
-            }
+
+            self.port.read(&mut ch)?;
             
             buffer.extend_from_slice(&ch);
         }
-
-        //print_buffer(&buffer);
 
         Ok(buffer)
     }
@@ -138,7 +129,7 @@ impl Amp {
         let cmd = format!("{}\r", marker);
         let reply = format!("{}\r\n#\r\nCommand Error.\r\n#", marker);
 
-        println!("cmd: '{}' reply: '{}'", escape(&cmd), escape(&reply));
+        //println!("cmd: '{}' reply: '{}'", escape(&cmd), escape(&reply));
 
         self.port.write(cmd.as_bytes())?;
         self.read_until(reply.as_bytes())?;
@@ -149,12 +140,10 @@ impl Amp {
     pub fn zone_enquiry(&mut self, id: ZoneId) -> Result<Vec<ZoneStatus>> {
         let (amp, zone, expected_responses) = match id {
             ZoneId::Zone { amp, zone } => (amp, zone, 1),
-            ZoneId::Amp(amp) => (amp, 0, 6),
+            ZoneId::Amp(amp) => (amp, 0, 6)
         };
 
         let cmd = format!("?{:}{:}", amp, zone);
-
-        //let mut statuses = Vec::with_capacity(expected_responses);
 
         self.exec_command(cmd.as_bytes(), expected_responses)?
             .into_iter()
@@ -169,7 +158,7 @@ impl Amp {
                 .collect::<Result<Vec<_>>>()?;
 
             Ok(ZoneStatus {
-                id: ZoneId::try_from(values[0]).context("valid zone id")?,
+                id: ZoneId::try_from(values[0]).context("invalid zone id received from amp")?,
                 attributes: vec![
                     ZoneAttribute::PublicAnnouncement(values[1] != 0),
                     ZoneAttribute::Power(values[2] != 0),
@@ -183,10 +172,10 @@ impl Amp {
                     ZoneAttribute::KeypadConnected(values[10] != 0)
                 ] 
             })
-        }).collect::<Result<Vec<ZoneStatus>>>()
+        }).collect()
     }
 
-    pub fn set_zone_attribute(&mut self, id: ZoneId, attr: ZoneAttribute) -> anyhow::Result<()> {
+    pub fn set_zone_attribute(&mut self, id: ZoneId, attr: ZoneAttribute) -> Result<()> {
         let range = ZoneAttributeDiscriminants::from(attr).io_range();
 
         let (attr, val) = match attr {
@@ -198,11 +187,11 @@ impl Amp {
             ZoneAttribute::Bass(v) => ("BS", v),
             ZoneAttribute::Balance(v) => ("BL", v),
             ZoneAttribute::Source(v) => ("CH", v),
-            _ => bail!("return error for unchangable attributes")
+            attr => bail!("{} cannot be changed", attr)
         };
 
         if !range.contains(&val) {
-            panic!("out of range"); // todo: return IO error
+            bail!("{} out of range [{},{}]", attr, range.start(), range.end());
         }
 
         let cmd = format!("<{}{}{:02}", id, attr, val);

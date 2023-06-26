@@ -5,6 +5,8 @@ mod liquid_heck;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::BufReader;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,6 +20,7 @@ use std::time::Duration;
 
 use amp::Amp;
 use amp::Port;
+use anyhow::bail;
 use common::mqtt::MqttConnectionManager;
 use common::zone::ZoneAttribute;
 use common::zone::ZoneAttributeDiscriminants;
@@ -28,12 +31,13 @@ use clap::builder::PathBufValueParser;
 use clap::command;
 use clap::builder::TypedValueParser;
 
-use common::zone::ZoneId;
 use config::AmpConfig;
 use config::Config;
 use config::MqttConfig;
 use config::ZoneConfig;
 
+use config::ZoneId;
+use figment::value::magic::RelativePathBuf;
 use log::LevelFilter;
 use log::debug;
 use log::error;
@@ -49,6 +53,10 @@ use rumqttc::MqttOptions;
 use rumqttc::Packet;
 use rumqttc::Publish;
 use rumqttc::RecvTimeoutError;
+use rumqttc::tokio_rustls::rustls::Certificate;
+use rumqttc::tokio_rustls::rustls::ClientConfig;
+use rumqttc::tokio_rustls::rustls::PrivateKey;
+use rumqttc::tokio_rustls::rustls::RootCertStore;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -74,10 +82,6 @@ use anyhow::{Context, Result};
 
 use common::mqtt::PublishJson;
 
-// use crate::ids::ZoneId;
-// use crate::mqtt::MqttConnectionManager;
-// use crate::mqtt::PublishJson;
-
 
 const DEFAULT_CONFIG_FILE_PATH: &str = match option_env!("DEFAULT_CONFIG_FILE_PATH") {
     Some(v) => v,
@@ -92,23 +96,169 @@ struct Args {
     config_file: PathBuf
 }
 
+fn connect_mqtt(config: &MqttConfig) -> Result<(Client, MqttConnectionManager, String)> {
+    let mut url = if config.srv_lookup {
+        let Some(host) = config.url.host_str() else {
+            bail!("a hostname is required for SRV lookups")
+        };
+        
+        let name = match config.url.scheme() {
+            "mqtt" => "_mqtt._tcp",
+            "mqtts" => "_secure-mqtt._tcp",
+            scheme => bail!("only 'mqtt' and 'mqtts' URL schemes are supported for SRV lookup (got: '{}')", scheme)
+        };
 
-fn connect_mqtt(config: &MqttConfig) -> Result<(Client, MqttConnectionManager), Box<dyn std::error::Error>> {
-    let mut options = MqttOptions::parse_url(&config.url)?;
+        let name = format!("{}.{}", name, host);
 
-    options.set_last_will(LastWill::new("mwha/connected", "0", rumqttc::QoS::AtLeastOnce, true));
+        todo!("srv support!");
+
+        let url = config.url.clone();
+        // url.set_host(Some("foo"))?;
+        // url.set_port(Some(1883))?;
+
+        url
+
+    } else {
+        config.url.clone()
+
+    };
+
+    {
+        let mut query = url.query_pairs().into_owned().collect::<HashMap<_, _>>();
+
+        // set a default client id, unless specified in the config
+        if !query.contains_key("client_id") {
+            query.insert("client_id".to_string(), "mwha2mqttd".to_string());
+        }
+
+        // overwrite the URL query string
+        url.query_pairs_mut()
+            .clear()
+            .extend_pairs(query);
+    }
+
+    let mut options = MqttOptions::try_from(url)?;
+
+    // configure TLS
+    if let rumqttc::Transport::Tls(_) = options.transport() {
+        let mut root_store = RootCertStore::empty();
+        {
+            if let Some(ca_certs_path) = &config.ca_certs {
+                let ca_certs_path = ca_certs_path.relative();
+
+                let certs = File::open(&ca_certs_path)
+                    .map(BufReader::new)
+                    .and_then(|mut r| rustls_pemfile::certs(&mut r))
+                    .with_context(|| format!("failed to open ca_certs file {}", ca_certs_path.display()))?;
+
+                if certs.len() == 0 {
+                    bail!("no certificates found in ca_certs file {}", &ca_certs_path.display());
+                }
+
+                for (i, cert) in certs.into_iter().enumerate() {
+                    root_store.add(&Certificate(cert))
+                        .with_context(|| format!("failed to load certificate {} from ca_certs file {}", i, &ca_certs_path.display()))?;
+                }
+
+            } else {
+                // use system trust store
+                for cert in rustls_native_certs::load_native_certs().context("could not load platform certs")? {
+                    root_store.add(&Certificate(cert.0)).unwrap();
+                }
+            }
+        }
+
+        let tls_cfg_builder = ClientConfig::builder()
+            .with_safe_defaults()
+            .with_root_certificates(root_store);
+
+        let tls_config = if let Some(client_certs_path) = &config.client_certs {
+            let client_certs_path = client_certs_path.relative();
+
+            let mut rd = File::open(&client_certs_path)
+                .map(BufReader::new)
+                .with_context(|| format!("failed to open client_certs file {}", &client_certs_path.display()))?;
+
+            let mut client_certs = Vec::new();
+            let mut client_key = None;
+
+            loop {
+                match rustls_pemfile::read_one(&mut rd)? {
+                    None => break,
+                    Some(rustls_pemfile::Item::X509Certificate(cert)) => client_certs.push(Certificate(cert)),
+                    Some(rustls_pemfile::Item::PKCS8Key(key)) => {
+                        if let Some(_) = client_key {
+                            bail!("multiple private keys found in client_certs file {}", client_certs_path.display());
+
+                        } else {
+                            client_key = Some(key)
+                        }
+                    }, 
+                    _ => {}
+                }
+            }
+
+            let client_key = match client_key {
+                Some(client_key) => PrivateKey(client_key),
+                None => {
+                    if let Some(client_key_path) = &config.client_key {
+                        let client_key_path = client_key_path.relative();
+
+                        let mut keys = File::open(&client_key_path)
+                            .map(BufReader::new)
+                            .and_then(|mut r| rustls_pemfile::pkcs8_private_keys(&mut r))
+                            .with_context(|| format!("failed to open client_key file {}", client_key_path.display()))?;
+    
+                        match keys.len() {
+                            0 => bail!("no private keys found in client_key file {}", client_key_path.display()),
+                            1 => PrivateKey(keys.remove(0)),
+                            _ => bail!("multiple private keys found in client_key file {}", client_key_path.display()),
+                        }
+                    } else {
+                        bail!("client_cert ({}) doesn't contain a private key and client_key is unset", &client_certs_path.display());
+                    }
+                }
+            };
+
+            tls_cfg_builder.with_single_cert(client_certs, client_key)
+                .context("invalid client certificate chain and/or private key")?
+
+        } else {
+
+            tls_cfg_builder.with_no_client_auth()
+        };
+
+        options.set_transport(rumqttc::Transport::Tls(tls_config.into()));
+    }
+
+    let topic_base = match config.url.path() {
+        "" => "mwha/".to_string(),
+        "/" => "".to_string(),
+        other => {
+            let base = other.strip_prefix("/").unwrap_or(other);
+
+            if base.ends_with("/") {
+                base.to_string()
+            } else {
+                format!("{}/", base)
+            }
+        }
+    };
+
+    options.set_last_will(LastWill::new(format!("{}connected", topic_base), "0", rumqttc::QoS::AtLeastOnce, true));
 
     let (client, connection) = Client::new(options, 10);
 
     Ok((
         client.clone(),
-        MqttConnectionManager::new(client, connection)
+        MqttConnectionManager::new(client, connection),
+        topic_base
     ))
 }
 
 
 /// establish a connection to the amp, via either serial or TCP
-fn connect_amp(config: &Config) -> Result<Amp, Box<dyn std::error::Error>> {
+fn connect_amp(config: &Config) -> Result<Amp> {
     let port: Box<dyn Port> = if let Some(tcp) = &config.tcp {
         let stream = TcpStream::connect(&tcp.address)?;
         stream.set_read_timeout(Some(tcp.common.read_timeout))?;
@@ -119,7 +269,7 @@ fn connect_amp(config: &Config) -> Result<Amp, Box<dyn std::error::Error>> {
         Box::new(AmpSerialPort::new(&serial.device, serial.baud, serial.adjust_baud, serial.reset_baud, serial.common.read_timeout)?)
 
     } else {
-        panic!("either serial or tcp port configuration required") // todo: replace panic with error
+        bail!("either serial or tcp port configuration required")
     };
 
     Ok(Amp::new(port)?)
@@ -132,13 +282,13 @@ enum ChannelMessage {
 
 
 /// install zone attribute mqtt subscriptons
-fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, ZoneConfig>, mqtt: &mut MqttConnectionManager, send: Sender<ChannelMessage>) -> Result<()> {
+fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, ZoneConfig>, mqtt: &mut MqttConnectionManager, topic_base: &str, send: Sender<ChannelMessage>) -> Result<()> {
     for (&zone_id, _) in zones_config {
         for attr in ZoneAttributeDiscriminants::iter() {
             // don't subscribe/install handlers for read-only attributes
             if attr.read_only() { continue };
 
-            let topic = format!("mwha/set/zone/{}/{}", zone_id, attr.to_string().to_kebab_case());
+            let topic = format!("{}set/zone/{}/{}", topic_base, zone_id, attr.to_string().to_kebab_case());
 
             let handler = {
                 let topic = topic.clone();
@@ -176,7 +326,7 @@ fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, Zo
                         }
                     };
 
-                    send.send(ChannelMessage::ZoneStatusChanged(zone_id, attr)).unwrap(); // todo: handle channel error?
+                    send.send(ChannelMessage::ZoneStatusChanged(zone_id, attr)).unwrap(); // todo: handle channel send error?
                 }
             };
 
@@ -188,40 +338,56 @@ fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, Zo
     Ok(())
 }
 
-fn publish_metadata(mqtt: &mut Client, config: &Config) -> Result<()> {
-    mqtt.publish("mwha/connected", rumqttc::QoS::AtLeastOnce, true, "2")?;
+fn publish_metadata(mqtt: &mut Client, config: &Config, topic_base: &str) -> Result<()> {
+    mqtt.publish(format!("{}connected", topic_base), rumqttc::QoS::AtLeastOnce, true, "2")?;
 
     // source metadata
     for (source_id, source_config) in &config.amp.sources {
-        let topic_base = format!("mwha/status/source/{}", source_id);
+        let topic_base = format!("{}status/source/{}", topic_base, source_id);
 
         mqtt.publish_json(format!("{}/name", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(source_config.name))?;
         mqtt.publish_json(format!("{}/enabled", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(source_config.enabled))?;
     }
 
     // list of active zones
-    mqtt.publish_json("mwha/status/zones", rumqttc::QoS::AtLeastOnce, true, json!(config.amp.zones.keys().collect::<Vec<_>>()))?;
+    mqtt.publish_json("{}/status/zones", rumqttc::QoS::AtLeastOnce, true, json!(config.amp.zones.keys().map(|z| z.into()).collect::<Vec<u8>>()))?;
 
     // zone metadata
     for (zone_id, zone_config) in &config.amp.zones {
-        let topic_base = format!("mwha/status/zone/{}", zone_id);
+        let topic_base = format!("{}status/zone/{}", topic_base, zone_id);
 
         mqtt.publish_json(format!("{}/name", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(zone_config.name))?;
+
+        let zone_type = match zone_id {
+            ZoneId::Zone {..} => "zone",
+            ZoneId::Amp(_) => "amp",
+            ZoneId::System => "system",
+        };
+
+        mqtt.publish_json(format!("{}/type", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(zone_type))?;
     }
 
     Ok(())
 }
 
 /// spawn a worker thread that processes incoming zone attribute adjustments and periodically polls the amp for status updates
-fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, recv: Receiver<ChannelMessage>) -> JoinHandle<()> {
-    let amp_ids = config.zones.keys().map(ZoneId::to_amp).collect::<HashSet<ZoneId>>();
+fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, topic_base: &str, recv: Receiver<ChannelMessage>) -> JoinHandle<()> {
+    // get the zones specifically configured for publish (ignore amps and system)
+    let zone_ids = config.zones.keys().filter_map(|z| match z {
+        ZoneId::Zone { amp, zone } => Some(common::zone::ZoneId::Zone { amp: *amp, zone: *zone }),
+        _ => None,
+    }).collect::<HashSet<_>>();
+
+    // coalesce zone ids into amp ids (for bulk query)
+    let amp_ids = zone_ids.iter().map(common::zone::ZoneId::to_amp).collect::<HashSet<common::zone::ZoneId>>();
 
     let poll_interval = config.poll_interval;
+    let topic_base = topic_base.to_string();
 
     let mut mqtt = mqtt.clone();
 
     thread::spawn(move || {
-        let mut previous_statuses: HashMap<ZoneId, amp::ZoneStatus> = HashMap::new();
+        let mut previous_statuses: HashMap<common::zone::ZoneId, amp::ZoneStatus> = HashMap::new();
 
         loop {
             let mut adjustments = HashMap::new();
@@ -252,7 +418,20 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, rec
             // apply zone attribute adjustments, if any
             for (id, attr) in adjustments.values().into_iter() {
                 debug!("adjust {} = {:?}", id, attr);
-                amp.set_zone_attribute(*id, *attr).unwrap(); // TODO: handle error more gracefully
+
+                let ids = match *id {
+                    ZoneId::Zone { amp, zone } => vec![common::zone::ZoneId::Zone { amp, zone }],
+                    ZoneId::Amp(amp) => vec![common::zone::ZoneId::Amp(amp)],
+                    ZoneId::System => vec![
+                        common::zone::ZoneId::Amp(1),
+                        common::zone::ZoneId::Amp(2),
+                        common::zone::ZoneId::Amp(3)
+                    ],
+                };
+
+                for id in ids {
+                    amp.set_zone_attribute(id, *attr).unwrap(); // TODO: handle error more gracefully
+                }
             }
 
             // get zone statuses for active amps
@@ -262,8 +441,10 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, rec
             }
     
             for zone_status in zone_statuses {
-                // todo: don't publish status updates for disabled zones
-                // if config.amp.zones.keys().find(predicate)zone_status.id
+                // don't publish status updates for disabled zones
+                if !zone_ids.contains(&zone_status.id) {
+                    continue;
+                }
 
                 let previous_status = previous_statuses.get(&zone_status.id);
 
@@ -274,7 +455,7 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, rec
                     }
 
                     let attr_name = ZoneAttributeDiscriminants::from(attr).to_string().to_kebab_case();
-                    let topic = format!("mwha/status/zone/{}/{}", zone_status.id, attr_name);
+                    let topic = format!("{}status/zone/{}/{}", topic_base, zone_status.id, attr_name);
 
                     // todo: is there a cleaner way to do this except putting #[serde(untagged)] on the enum?
                     let value = match attr {
@@ -302,33 +483,35 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, rec
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    SimpleLogger::init(LevelFilter::Debug, simplelog::Config::default()).unwrap();
+    SimpleLogger::init(LevelFilter::Info, simplelog::Config::default()).unwrap();
 
     let args = Args::parse();
 
     let config = config::load_config(&args.config_file)?;
 
-    let (mut mqtt_client, mut mqtt_cm) = connect_mqtt(&config.mqtt)?;
+
+    let (mut mqtt_client, mut mqtt_cm, topic_base) = connect_mqtt(&config.mqtt)?;
 
     let amp = connect_amp(&config)?;
 
     // todo: better channel sender/receiver names
     let (send, recv) = mpsc::channel::<ChannelMessage>();
 
-    install_zone_attribute_subscription_handers(&config.amp.zones, &mut mqtt_cm, send)?;
+    install_zone_attribute_subscription_handers(&config.amp.zones, &mut mqtt_cm, &topic_base, send.clone())?;
 
-    let t = spawn_amp_worker(&config.amp, amp, mqtt_client.clone(), recv);
+    let amp_worker_thread = spawn_amp_worker(&config.amp, amp, mqtt_client.clone(), &topic_base, recv);
 
-    publish_metadata(&mut mqtt_client, &config)?;
+    publish_metadata(&mut mqtt_client, &config, &topic_base)?;
 
     let mut signals = Signals::new(TERM_SIGNALS)?;
     signals.forever().next(); // wait for a signal
 
-    println!("Caught shutdown signal");
+    info!("caught shutdown signal");
 
     mqtt_client.disconnect()?;
 
-    t.join().unwrap();
+    send.send(ChannelMessage::Poison)?;
+    amp_worker_thread.join().unwrap();
 
     Ok(())
 }

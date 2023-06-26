@@ -44,3 +44,8 @@ rand = "0.8.5"
 signal-hook = "0.3.15"
 anyhow = "1.0.71"
 thiserror = "1.0.40"
+url = { version = "2.4.0", features = ["serde"] }
+rustls-pemfile = "1.0.2"
+rustls-native-certs = "0.6.3"
+
+

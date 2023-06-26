@@ -12,13 +12,13 @@ use crate::amp::Port;
 pub const BAUD_RATES: &'static [u32] = &[9600, 19200, 38400, 57600, 115200, 230400];
 
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum BaudConfig {
     Rate(u32),
     Auto,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum AdjustBaudConfig {
     Rate(u32),
     Max,
