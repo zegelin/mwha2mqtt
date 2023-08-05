@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <requires lib="gtk" version="4.0"/>
+
+  <template class="ZoneControl" parent="GtkBox">
+    <property name="orientation">vertical</property>
+
+    <child>
+      <object class="GtkBox">
+        <property name="orientation">vertical</property>
+        
+        <child>
+            <object class="GtkBox">
+                <property name="orientation">horizontal</property>
+
+                <child>
+                    <object class="GtkLabel">
+                        <property name="label">Zone Name</property>
+                        <style>
+                            <!-- <class name="large-title"/> -->
+                        </style>
+                    </object>
+                </child>
+
+                <child>
+                    <object class="GtkLabel">
+                        <property name="label">10</property>
+                        <style>
+                            <class name="dim-label"/>
+                        </style>
+                    </object>
+                </child>
+
+                <child>
+                    <object class="GtkToggleButton">
+                        <property name="icon-name">open-menu-symbolic</property>
+                    </object>
+                </child>
+
+                <child>
+                    <object class="GtkToggleButton">
+                        <property name="icon-name">open-menu-symbolic</property>
+                    </object>
+                </child>
+
+            </object>
+        </child>
+
+        <child>
+            <object class="GtkBox">
+                <property name="orientation">horizontal</property>
+
+                <child>
+                    <object class="GtkLabel">
+                        <property name="label">Source:</property>
+                        <style>
+                        </style>
+                    </object>
+                </child>
+
+                <child>
+                    <object class="GtkComboBoxText">
+                        <items>
+                            <item translatable="yes">Factory</item>
+                            <item translatable="yes">Home</item>
+                            <item translatable="yes">Subway</item>
+                        </items>
+                    </object>
+                </child>
+
+            </object>
+        </child>
+
+        <child>
+            <object class="GtkBox">
+                <property name="orientation">horizontal</property>
+
+                <child>
+                    <object class="GtkScale">
+                        
+                    </object>
+                </child>
+            </object>
+        </child>
+
+        <child>
+            <object class="GtkExpander">
+                <child type="label">
+                    <object class="GtkLabel">
+                        <property name="label">Advanced</property>
+                    </object>
+                </child>
+
+                <child>
+                    <object class="GtkGrid">
+                        <child>
+                            <object class="GtkLabel">
+                                <property name="label">Balance:</property>
+
+                                <layout>
+                                    <property name="column">0</property>
+                                    <property name="row">0</property>
+                                </layout>
+                            </object>
+                        </child>
+
+                        <child>
+                            <object class="GtkScale">
+                                <layout>
+                                    <property name="column">1</property>
+                                    <property name="row">0</property>
+                                </layout>
+                            </object>
+                        </child>
+
+
+                        <child>
+                            <object class="GtkLabel">
+                                <property name="label">Treble:</property>
+
+                                <layout>
+                                    <property name="column">0</property>
+                                    <property name="row">1</property>
+                                </layout>
+                            </object>
+                        </child>
+
+                        <child>
+                            <object class="GtkScale">
+                                <layout>
+                                    <property name="column">1</property>
+                                    <property name="row">1</property>
+                                </layout>
+                            </object>
+                        </child>
+
+
+                        <child>
+                            <object class="GtkLabel">
+                                <property name="label">Bass:</property>
+
+                                <layout>
+                                    <property name="column">0</property>
+                                    <property name="row">2</property>
+                                </layout>
+                            </object>
+                        </child>
+
+                        <child>
+                            <object class="GtkScale">
+                                <layout>
+                                    <property name="column">1</property>
+                                    <property name="row">2</property>
+                                </layout>
+                            </object>
+                        </child>
+                    </object>
+                </child>
+            </object>
+        </child>
+
+
+
+      </object>
+    </child>
+  </template>
+
+  
+</interface>

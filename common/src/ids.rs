@@ -20,6 +20,12 @@ pub enum SourceIdError {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct SourceId(u8);
 
+// impl SourceId {
+//     fn all() -> Vec<SourceId> {
+//         (1..=6).into_iter().map(SourceId::into).collect()
+//     }
+// }
+
 impl FromStr for SourceId {
     type Err = SourceIdError;
 

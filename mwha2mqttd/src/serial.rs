@@ -5,7 +5,7 @@ use serialport::SerialPort;
 
 use delegate::delegate;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::amp::Port;
 
@@ -47,7 +47,7 @@ impl AmpSerialPort {
         // detect the baud rate
         let detected_baud = match baud_config {
             BaudConfig::Rate(baud) => baud,
-            BaudConfig::Auto => AmpSerialPort::detect_baud(&mut port)?,
+            BaudConfig::Auto => AmpSerialPort::detect_baud(&mut port).context("failed to detect baud")?,
         };
 
         // adjust the baud rate
@@ -59,7 +59,7 @@ impl AmpSerialPort {
         
         let p = AmpSerialPort {
             port,
-            previous_baud: if reset_baud {Some(detected_baud)} else {None},
+            previous_baud: if reset_baud { Some(detected_baud) } else { None }, // todo: dont "reset" baud if no adjustment occured
         };
 
         Ok(p)
@@ -71,7 +71,7 @@ impl AmpSerialPort {
     /// writes a known string and compares the echo readback. If the echoed value is identical
     /// the baud rate is correct. 
     ///
-    fn detect_baud(port: &mut Box<dyn SerialPort>) -> Result<u32, io::Error> {
+    fn detect_baud(port: &mut Box<dyn SerialPort>) -> Result<u32> {
         let mut response_buffer = [0; BAUD_DETECT_TEST_DATA.len()];
 
         for &rate in BAUD_RATES {
@@ -90,16 +90,16 @@ impl AmpSerialPort {
                 },
                 Err(error) => match error.kind() {
                     io::ErrorKind::TimedOut => continue, // wrong baud possibly means less bytes read than expected and a timeout occurs
-                    _ => return Err(error)
+                    _ => return Err(error.into())
                 },
             }
         }
 
-        Err(io::Error::new(io::ErrorKind::Other, "Unable to detect current baud rate.")) // todo: custom error
+        bail!("Unable to detect current baud rate.") // todo: custom error
     }
 
     fn set_baud(port: &mut Box<dyn SerialPort>, baud_rate: u32) -> Result<(), io::Error> {
-        debug!("Adjusting baud rate to {}", baud_rate);
+        info!("Adjusting baud rate to {}", baud_rate);
 
         let cmd = format!("<{}\r", baud_rate);
         port.write_all(cmd.as_bytes())?;

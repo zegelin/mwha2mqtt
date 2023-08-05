@@ -1,0 +1,21 @@
+[package]
+name = "mwhaemu"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common = { path = "../common" }
+# mwha2mqtt = { path = "../" }
+
+clap.workspace = true
+strum.workspace = true
+strum_macros.workspace = true
+
+anyhow = "1.0.71"
+
+rustyline = { version = "11.0.0", features = ["derive"] }
+
+stybulate = "1.1.2"
+clap-repl = "0.1.0"
+regex.workspace = true
+lazy_static = "1.4.0"

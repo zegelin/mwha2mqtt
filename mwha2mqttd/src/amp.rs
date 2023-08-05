@@ -60,7 +60,7 @@ impl Amp {
 			port
 		};
 
-        amp.resync()?;
+        amp.resync().context("failed to resync amp connection")?;
 
 		Ok( amp )
 	}
@@ -68,7 +68,8 @@ impl Amp {
     fn read_until(&mut self, marker: &[u8]) -> Result<Vec<u8>> {
         let mut buffer = Vec::with_capacity(256);
 		
-        // maybe switch to a BufReader, but this is 9600 baud serial, performance isn't really an issue.
+        // maybe switch to a BufReader?
+        // (but this is 9600 baud serial, performance isn't really an issue!)
         while !buffer.ends_with(marker) {
             let mut ch = [0; 1];
 
@@ -102,7 +103,7 @@ impl Amp {
         // read echoback
 		let echo = self.read_command_response()?;
         if echo != command {
-            bail!("Serial echoback was not the expected value. got = {:?}, expected = {:?}", str::from_utf8(&echo), str::from_utf8(command));
+            bail!("serial echoback was not the expected value. got = {:?}, expected = {:?}", str::from_utf8(&echo), str::from_utf8(command));
         }
 
         // read responses
@@ -129,7 +130,7 @@ impl Amp {
         let cmd = format!("{}\r", marker);
         let reply = format!("{}\r\n#\r\nCommand Error.\r\n#", marker);
 
-        //println!("cmd: '{}' reply: '{}'", escape(&cmd), escape(&reply));
+        println!("cmd: '{}' reply: '{}'", escape(&cmd), escape(&reply));
 
         self.port.write(cmd.as_bytes())?;
         self.read_until(reply.as_bytes())?;
@@ -157,37 +158,45 @@ impl Amp {
                 })
                 .collect::<Result<Vec<_>>>()?;
 
-            Ok(ZoneStatus {
-                id: ZoneId::try_from(values[0]).context("invalid zone id received from amp")?,
-                attributes: vec![
-                    ZoneAttribute::PublicAnnouncement(values[1] != 0),
-                    ZoneAttribute::Power(values[2] != 0),
-                    ZoneAttribute::Mute(values[3] != 0),
-                    ZoneAttribute::DoNotDisturb(values[4] != 0),
-                    ZoneAttribute::Volume(values[5]),
-                    ZoneAttribute::Treble(values[6]),
-                    ZoneAttribute::Bass(values[7]),
-                    ZoneAttribute::Balance(values[8]),
-                    ZoneAttribute::Source(values[9]),
-                    ZoneAttribute::KeypadConnected(values[10] != 0)
-                ] 
-            })
+            {
+                use ZoneAttribute::*;
+
+                Ok(ZoneStatus {
+                    id: ZoneId::try_from(values[0]).context("invalid zone id received from amp")?,
+                    attributes: vec![
+                        PublicAnnouncement(values[1] != 0),
+                        Power(values[2] != 0),
+                        Mute(values[3] != 0),
+                        DoNotDisturb(values[4] != 0),
+                        Volume(values[5]),
+                        Treble(values[6]),
+                        Bass(values[7]),
+                        Balance(values[8]),
+                        Source(values[9]),
+                        KeypadConnected(values[10] != 0)
+                    ] 
+                })
+            }
         }).collect()
     }
 
     pub fn set_zone_attribute(&mut self, id: ZoneId, attr: ZoneAttribute) -> Result<()> {
         let range = ZoneAttributeDiscriminants::from(attr).io_range();
 
-        let (attr, val) = match attr {
-            ZoneAttribute::Power(v) => ("PR", v as u8),
-            ZoneAttribute::Mute(v) => ("MU", v as u8),
-            ZoneAttribute::DoNotDisturb(v) => ("DT", v as u8),
-            ZoneAttribute::Volume(v) => ("VO", v),
-            ZoneAttribute::Treble(v) => ("TR", v),
-            ZoneAttribute::Bass(v) => ("BS", v),
-            ZoneAttribute::Balance(v) => ("BL", v),
-            ZoneAttribute::Source(v) => ("CH", v),
-            attr => bail!("{} cannot be changed", attr)
+        let (attr, val) = {
+            use ZoneAttribute::*;
+
+            match attr {
+                Power(v) => ("PR", v as u8),
+                Mute(v) => ("MU", v as u8),
+                DoNotDisturb(v) => ("DT", v as u8),
+                Volume(v) => ("VO", v),
+                Treble(v) => ("TR", v),
+                Bass(v) => ("BS", v),
+                Balance(v) => ("BL", v),
+                Source(v) => ("CH", v),
+                attr => bail!("{} cannot be changed", attr)
+            }
         };
 
         if !range.contains(&val) {

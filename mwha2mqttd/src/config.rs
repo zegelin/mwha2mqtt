@@ -11,7 +11,7 @@ use thiserror::Error;
 
 use crate::serial::{BaudConfig, BAUD_RATES, AdjustBaudConfig};
 
-use common::ids::SourceId;
+use common::{ids::SourceId, mqtt::MqttConfig};
 
 
 impl <'de>Deserialize<'de> for BaudConfig {
@@ -59,13 +59,6 @@ impl <'de>Deserialize<'de> for BaudConfig {
     }
 }
 
-impl Default for BaudConfig {
-    fn default() -> Self {
-        BaudConfig::Auto
-    }
-}
-
-
 impl <'de>Deserialize<'de> for AdjustBaudConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -91,23 +84,20 @@ impl <'de>Deserialize<'de> for AdjustBaudConfig {
                 }
             }
 
-            fn visit_i32<E>(self, v: i32) -> Result<Self::Value, E>
-                where
-                    E: de::Error, {
+            
 
-                Err(de::Error::invalid_value(de::Unexpected::Str("noo"), &self))
-            }
+            // fn visit_i32<E>(self, v: i32) -> Result<Self::Value, E>
+            //     where
+            //         E: de::Error, {
+
+            //     Err(de::Error::invalid_value(de::Unexpected::Str("noo"), &self))
+            // }
         }
         
         deserializer.deserialize_any(AdjustBaudConfigVisitor)
     }
 }
 
-impl Default for AdjustBaudConfig {
-    fn default() -> Self {
-        AdjustBaudConfig::Off
-    }
-}
 
 
 #[derive(Clone, Deserialize, Debug)]
@@ -128,10 +118,10 @@ pub struct SerialConfig {
 
     pub device: String,
 
-    #[serde(default)]
+    #[serde(default = "SerialConfig::default_baud")]
     pub baud: BaudConfig,
 
-    #[serde(default)]
+    #[serde(default = "SerialConfig::default_adjust_baud")]
     pub adjust_baud: AdjustBaudConfig,
 
     #[serde(default = "SerialConfig::default_reset_baud")]
@@ -139,6 +129,10 @@ pub struct SerialConfig {
 }
 
 impl SerialConfig {
+    fn default_baud() -> BaudConfig { BaudConfig::Auto }
+
+    fn default_adjust_baud() -> AdjustBaudConfig { AdjustBaudConfig::Off }
+    
     fn default_reset_baud() -> bool {true}
 }
 
@@ -316,24 +310,6 @@ impl AmpConfig {
 
 
 #[derive(Clone, Deserialize, Debug)]
-pub struct MqttConfig {
-    pub url: url::Url,
-
-    #[serde(default = "MqttConfig::default_srv_lookup")]
-    pub srv_lookup: bool,
-
-    pub ca_certs: Option<RelativePathBuf>,
-
-    pub client_certs: Option<RelativePathBuf>,
-    pub client_key: Option<RelativePathBuf>,
-}
-
-impl MqttConfig {
-    fn default_srv_lookup() -> bool {false}
-}
-
-
-#[derive(Clone, Deserialize, Debug)]
 pub struct LoggingConfig {
 
 }
@@ -445,6 +421,8 @@ pub fn load_config(path: &PathBuf) -> Result<Config> {
 
     // todo!()
 
+    // todo: create default source IDs so there is always 6
+
     let f = Figment::from(Toml::file(path));
 
     let config: Config = match f.extract() {
@@ -459,38 +437,9 @@ pub fn load_config(path: &PathBuf) -> Result<Config> {
         },
     };
 
-    println!("config: {:?}", config);
+    //println!("config: {:?}", config);
 
     
 
     Ok(config)
-}
-
-
-
-#[cfg(test)]
-mod tests {
-    use url::Url;
-
-    use super::*;
-
-    #[test]
-    fn test_mqtt_topic_base() {
-        fn config(url: &str) -> MqttConfig {
-            MqttConfig {
-                url: Url::parse(url).expect("valid url"),
-                srv_lookup: false,
-                ca_certs: None,
-                client_certs: None,
-                client_key: None
-            }
-        }
-
-        print!("base: {}", config("mqtt://localhost").topic_base());
-
-        assert!(config("mqtt://localhost").topic_base() == "mwha/");
-        assert!(config("mqtt://localhost/").topic_base() == "");
-        assert!(config("mqtt://localhost//").topic_base() == "/");
-        assert!(config("mqtt://localhost/custom").topic_base() == "custom/");
-    }
 }

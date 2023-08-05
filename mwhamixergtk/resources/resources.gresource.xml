@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/com/zegelin/mwhamixergtk">
+    <file compressed="true" preprocess="xml-stripblanks">main_window.ui.xml</file>
+    <file compressed="true" preprocess="xml-stripblanks">zone_control.ui.xml</file>
+  </gresource>
+</gresources>
