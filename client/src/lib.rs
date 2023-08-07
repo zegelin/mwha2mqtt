@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 
-use common::{mqtt::MqttConnectionManager, ids::SourceId, zone::ZoneId};
+use common::{mqtt::MqttConnectionManager};
 use rumqttc::{Publish, QoS};
 
 
@@ -29,21 +29,32 @@ impl Default for SourceStatus {
     }
 }
 
-struct ZoneStatus {
-    name: Option<String>,
-    zone_type: Option<ZoneType>,
+enum ZoneStatus {
+    Zone {
+        name: Option<String>,
 
-    public_announcement: Option<bool>,
-    power: Option<bool>,
-    mute: Option<bool>,
-    do_not_disturb: Option<bool>,
-    volume: Option<u8>,
-    treble: Option<u8>,
-    bass: Option<u8>,
-    balance: Option<u8>,
-    source: Option<u8>,
-    keypad_connected: Option<bool>
+        public_announcement: Option<bool>,
+        power: Option<bool>,
+        mute: Option<bool>,
+        do_not_disturb: Option<bool>,
+        volume: Option<u8>,
+        treble: Option<u8>,
+        bass: Option<u8>,
+        balance: Option<u8>,
+        source: Option<u8>,
+        keypad_connected: Option<bool>
+    },
+    Amp {
+        name: Option<String>
+    },
+    System {
+        name: Option<String>
+    }
 }
+
+struct SourceId(String);
+
+struct ZoneId(String);
 
 struct Status {
     connected: Option<Connected>,
@@ -52,58 +63,71 @@ struct Status {
     zones: HashMap<ZoneId, ZoneStatus>
 }
 
-// impl Default for Status {
-//     fn default() -> Self {
-//         let default_sources = SourceId::all().map(|id| (id, SourceStatus::default())).collect();
+impl Default for Status {
+    fn default() -> Self {
+        //let default_sources = SourceId::all().map(|id| (id, SourceStatus::default())).collect();
 
-//         Self { 
-//             connected: None,
-//             sources: default_sources,
-//             zones: HashMap::new()
-//         }
-//     }
-// }
+        Self { 
+            connected: None,
+            sources: HashMap::new(),
+            zones: HashMap::new()
+        }
+    }
+}
 
-struct Client {
-    //status: Arc<Mutex<Status>>
+pub struct Client {
+    status: Arc<Mutex<Status>>
 }
 
 
 impl Client {
-    fn setup_status_handlers<'a, M>(&self, mqtt: Arc<Mutex<MqttConnectionManager>>) 
-    {
+    pub fn new() -> Self {
+        Client {
+            status: Arc::new(Mutex::new(Status::default()))
+        }
+    }
 
+    // pub fn set_zone_attribute(&self, )
+
+
+    pub fn setup_status_handlers<'a>(&self, mqtt: Arc<Mutex<MqttConnectionManager>>) {
         let topic_base = "mwha/status/";
 
-        for source in SourceId::all() {
-            mqtt.lock().unwrap().subscribe_json(format!("{}source/{}/name", topic_base, source), QoS::AtLeastOnce, |publish: Publish, name: String| {
+        // for source in SourceId::all() {
+        //     mqtt.lock().unwrap().subscribe_json(format!("{}/source/{}/name", topic_base, source), QoS::AtLeastOnce, |publish: Publish, name: String| {
 
-                self.status
+        //         self.status
 
-                println!("{}: name: {}", source, name);
+        //         println!("{}: name: {}", source, name);
 
-            });
+        //     });
     
-            mqtt.subscribe_json(format!("{}source/{}/enabled", topic_base, source), QoS::AtLeastOnce, |publish: Publish, enabled: bool| {
+        //     mqtt.subscribe_json(format!("{}/source/{}/enabled", topic_base, source), QoS::AtLeastOnce, |publish: Publish, enabled: bool| {
                 
-            });
-        }
+        //     });
+        // }
 
         
 
         mqtt.lock().unwrap().subscribe_json(format!("{}zones", topic_base), QoS::AtLeastOnce, {
             let mqtt = mqtt.clone();
 
-            move |publish: &Publish, zones: &Vec<u8>| {
+            move |publish: &Publish, zones: &Vec<String>| {
+                // self.status.lock().unwrap().zones.keys()
 
                 dbg!(zones);
 
-                //let zones = vec![11, 12, 15, 25].map(ZoneId::into);
+                let mut mqtt = mqtt.lock().unwrap();
 
                 for zone in zones {
-                    let topic = format!("{}zone/{}/name", topic_base, zone);
+                    let topic_base = format!("{}/zone/{}/", topic_base, zone);
 
-                    mqtt.lock().unwrap().subscribe_json(topic, QoS::AtLeastOnce, |publish: &Publish, name: &String| {
+                    mqtt.subscribe_json(format!("{}name", topic_base), QoS::AtLeastOnce, |publish: &Publish, name: &String| {
+                        // self.status.lock().unwrap().zones.get(zone).unwrap().name
+
+                    }).unwrap();
+
+                    mqtt.subscribe_json(format!("{}type", topic_base), QoS::AtLeastOnce, |publish: &Publish, zone_type: &String| {
 
 
 

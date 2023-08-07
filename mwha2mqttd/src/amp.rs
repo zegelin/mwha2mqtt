@@ -181,7 +181,7 @@ impl Amp {
     }
 
     pub fn set_zone_attribute(&mut self, id: ZoneId, attr: ZoneAttribute) -> Result<()> {
-        let range = ZoneAttributeDiscriminants::from(attr).io_range();
+        attr.validate()?;
 
         let (attr, val) = {
             use ZoneAttribute::*;
@@ -199,9 +199,6 @@ impl Amp {
             }
         };
 
-        if !range.contains(&val) {
-            bail!("{} out of range [{},{}]", attr, range.start(), range.end());
-        }
 
         let cmd = format!("<{}{}{:02}", id, attr, val);
 

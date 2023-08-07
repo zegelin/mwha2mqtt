@@ -1,6 +1,6 @@
 [logging]
 
-[serial]
+[serials]
 # The serial port device file path (i.e., /dev/ttyUSB0).
 device = "/dev/ttyUSB0"
 
@@ -24,8 +24,9 @@ device = "/dev/ttyUSB0"
 # Fractional values are supported.
 #read_timeout = 1.0
 
-# [tcp]
-# url = "raw://"
+[tcp]
+#url = "raw://localhost:9955"
+address = "localhost:9955"
 
 
 
@@ -65,7 +66,7 @@ url = "mqtt://foo:bar@localhost"
 srv_lookup = false
 
 
-# The following paths may start with $CREDENTIALS_DIRECTORY to reference certificate/private key files
+# The following paths may start with "$CREDENTIALS_DIRECTORY" to reference certificate/private key files
 # managed by systemd's credentials feature (see https://systemd.io/CREDENTIALS/ for details)
 
 # Path to a file of concatenated CA certificates (in PEM format).
@@ -93,7 +94,7 @@ ca_certs = "foo.pem"
 poll_interval = "100 ms"
 
 # Amplifier metatdata.
-# This data is arbitrary, but can be customized so that clients (such as the mwhactl, mwhamixer and mwha-homebridge)
+# This data is arbitrary, but can be customized so that clients (such as mwhactl, mwhamixer and mwha-homebridge)
 # display the right values.
 #manufacturer = "Monoprice"
 #model = "MPR-6ZHMAUT"
@@ -130,14 +131,14 @@ poll_interval = "100 ms"
 #
 # A zone id is a 2-digit number: AZ
 # The first digit (A) is the amplifier number, and valid values are 1 through 3 (inclusive), or 0 (see below).
-# The second digit (Z) is the zone number on amplifier A, and valid values are 1 through 36 (inclusive), or 0 (see below).
-# Unless you have multiple amps connected via the "expansion connector" ribbon cable the A will always be 1.
+# The second digit (Z) is the zone number on amplifier A, and valid values are 1 through 6 (inclusive), or 0 (see below).
+# Unless you have multiple amps connected via the "expansion connector" ribbon cable the A should always be 1.
 #
 # When A and Z are both 0 (id 00), this is a special zone representing all zones, aka "the system". No status will be
-# reported for this "zone", however adjustments sent to this zone will adjust all zones (on every amp).
+# reported for this "zone", however adjustments sent to this zone will adjust all zones (on every amp) simultaniously.
 # 
 # When A is [1, 3], Z may be 0 (id 10, 20, and 30), this is a special zone representing all zones on amp A. No status will be
-# reported for this "zone", however adjustments sent to this zone will adjust all zones on amp A.
+# reported for this "zone", however adjustments sent to this zone will adjust all zones on amp A simultaniously.
 #
 # Valid zone ids are:
 # 11 through 16: Zones on amp 1 [Master].

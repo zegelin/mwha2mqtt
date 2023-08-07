@@ -67,10 +67,11 @@ impl MqttConnectionManager {
                             // todo: handle wildcards
                             match topic_handlers.lock().expect("unable to lock topic_handlers").get(&publish.topic) {
                                 Some(handler) => handler(&publish),
-                                None => warn!("received MQTT Publish packet for unknown subscription. topic = {}", publish.topic),
+                                None => log::warn!("received MQTT Publish packet for unknown subscription. topic = {}", publish.topic),
                             }
                         },
                         Ok(Event::Outgoing(rumqttc::Outgoing::Disconnect)) => {
+                            // TODO: notify anyone waiting for disconnect
                             return
                         },
                         Ok(_) => (),
@@ -89,6 +90,9 @@ impl MqttConnectionManager {
     }
 
     pub fn wait_disconnected(&self) -> anyhow::Result<()> {
+        // self.handler_thread.join().unwrap();
+
+        // Ok(())
         todo!()
     }
 
@@ -100,14 +104,14 @@ impl MqttConnectionManager {
     {
         let topic = topic.into();
 
-        self.topic_handlers.lock().unwrap().insert(topic.clone(), Box::new(handler));
+        self.topic_handlers.lock().expect("unable to lock topic_handlers").insert(topic.clone(), Box::new(handler));
         self.client.subscribe(topic, qos)
     }
 
     pub fn subscribe_json<T, F, S>(&mut self, topic: S, qos: rumqttc::QoS, handler: F) -> Result<(), rumqttc::ClientError>
     where
         T: DeserializeOwned,
-        F: Fn(&Publish, &T),
+        F: Fn(&Publish, &T), // TODO: change T to Result<T> so that errors can be propagated to handlers
         F: Send + 'static,
         S: Into<String>
     {
@@ -120,20 +124,29 @@ impl MqttConnectionManager {
             move |publish: &Publish|  {
                 let payload = match str::from_utf8(&publish.payload) {
                     Ok(s) => s,
-                    Err(err) => {
-                        //let topic = if topic == publish.topic { topic } else { format!("{} ({})", topic, publish.topic)};
-                        
-                        error!("{}: received payload is not valid UTF-8: {}", topic, err);
+                    Err(err) => {                        
+                        log::error!("{}: received payload is not valid UTF-8: {}", topic, err);
                         return;
                     },
                 };
     
-                let x: T = serde_json::from_str(payload).unwrap();
-                handler(publish, &x);
+                let payload: T = serde_json::from_str(payload).unwrap();
+                handler(publish, &payload);
             }
         };
         
         self.subscribe(topic, qos, handler)
+    }
+
+    pub fn unsubscribe<S>(&mut self, topic: S) -> Result<(), rumqttc::ClientError>
+    where
+        S: Into<String>
+    {
+        todo!();
+
+        self.client.unsubscribe(topic)?;
+
+        //self.topic_handlers.loc
     }
 }
 
@@ -152,7 +165,23 @@ pub struct MqttConfig {
 }
 
 impl MqttConfig {
-    fn default_srv_lookup() -> bool {false}
+    fn default_srv_lookup() -> bool { false }
+
+    pub fn topic_base(&self, default: &str) -> String {
+        match self.url.path() {
+            "" => default.to_string(),
+            "/" => "".to_string(),
+            other => {
+                let base = other.strip_prefix("/").unwrap_or(other);
+    
+                if base.ends_with("/") {
+                    base.to_string()
+                } else {
+                    format!("{}/", base)
+                }
+            }
+        }
+    }
 }
 
 fn resolve_credentials_path(path: &RelativePathBuf) -> anyhow::Result<PathBuf> {

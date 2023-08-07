@@ -1,22 +1,16 @@
 mod config;
 mod amp;
 mod serial;
-mod liquid_heck;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::BufReader;
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::thread::JoinHandle;
-use std::time::Duration;
 
 use amp::Amp;
 use amp::Port;
@@ -35,9 +29,6 @@ use config::ZoneConfig;
 
 use config::ZoneId;
 use log::LevelFilter;
-use log::debug;
-use log::error;
-use log::info;
 use rumqttc::Client;
 use rumqttc::LastWill;
 use rumqttc::Publish;
@@ -74,19 +65,7 @@ struct Args {
 fn connect_mqtt(config: &MqttConfig) -> Result<(Client, MqttConnectionManager, String)> {
     let mut options = common::mqtt::options_from_config(config, "mwha2mqttd")?;
 
-    let topic_base = match config.url.path() {
-        "" => "mwha/".to_string(),
-        "/" => "".to_string(),
-        other => {
-            let base = other.strip_prefix("/").unwrap_or(other);
-
-            if base.ends_with("/") {
-                base.to_string()
-            } else {
-                format!("{}/", base)
-            }
-        }
-    };
+    let topic_base = config.topic_base("mwha");
 
     options.set_last_will(LastWill::new(format!("{}connected", topic_base), "0", rumqttc::QoS::AtLeastOnce, true));
 
@@ -138,7 +117,7 @@ fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, Zo
             // don't subscribe/install handlers for read-only attributes
             if attr.read_only() { continue };
 
-            let topic = format!("{}set/zone/{}/{}", topic_base, zone_id, attr.to_string().to_kebab_case());
+            let topic = format!("{}/set/zone/{}/{}", topic_base, zone_id, attr.to_string().to_kebab_case());
 
             // {
             //     use ZoneAttributeDiscriminants::*;
@@ -169,7 +148,7 @@ fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, Zo
                     let payload = match str::from_utf8(&publish.payload) {
                         Ok(s) => s,
                         Err(err) => {
-                            error!("{}: received payload is not valid UTF-8: {}", topic, err);
+                            log::error!("{}: received payload is not valid UTF-8: {}", topic, err);
                             return;
                         },
                     };
@@ -196,7 +175,7 @@ fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, Zo
                     let attr = match attr {
                         Ok(attr) => attr,
                         Err(err) => {
-                            error!("{}: unable to decode payload: {}", topic, err);
+                            log::error!("{}: unable to decode payload: {}", topic, err);
                             return;
                         }
                     };
@@ -205,7 +184,7 @@ fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, Zo
                 }
             };
 
-            debug!("subscribibing to {}", topic);
+            log::debug!("subscribibing to {}", topic);
             mqtt.subscribe(topic, rumqttc::QoS::AtLeastOnce, handler)?;
         }
     }
@@ -218,20 +197,20 @@ fn publish_metadata(mqtt: &mut Client, config: &Config, topic_base: &str) -> Res
 
     // source metadata
     for (source_id, source_config) in &config.amp.sources {
-        let topic_base = format!("{}status/source/{}", topic_base, source_id);
+        let topic_base = format!("{}status/source/{}/", topic_base, source_id);
 
-        mqtt.publish_json(format!("{}/name", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(source_config.name))?;
-        mqtt.publish_json(format!("{}/enabled", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(source_config.enabled))?;
+        mqtt.publish_json(format!("{}name", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(source_config.name))?;
+        mqtt.publish_json(format!("{}enabled", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(source_config.enabled))?;
     }
 
     // list of active zones
-    mqtt.publish_json("{}/status/zones", rumqttc::QoS::AtLeastOnce, true, json!(config.amp.zones.keys().map(|z| z.into()).collect::<Vec<u8>>()))?;
+    mqtt.publish_json(format!("{}status/zones", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(config.amp.zones.keys().map(|z| z.to_string()).collect::<Vec<_>>()))?;
 
     // zone metadata
     for (zone_id, zone_config) in &config.amp.zones {
-        let topic_base = format!("{}status/zone/{}", topic_base, zone_id);
+        let topic_base = format!("{}status/zone/{}/", topic_base, zone_id);
 
-        mqtt.publish_json(format!("{}/name", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(zone_config.name))?;
+        mqtt.publish_json(format!("{}name", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(zone_config.name))?;
 
         let zone_type = match zone_id {
             ZoneId::Zone {..} => "zone",
@@ -239,7 +218,7 @@ fn publish_metadata(mqtt: &mut Client, config: &Config, topic_base: &str) -> Res
             ZoneId::System => "system",
         };
 
-        mqtt.publish_json(format!("{}/type", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(zone_type))?;
+        mqtt.publish_json(format!("{}type", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(zone_type))?;
     }
 
     Ok(())
@@ -267,45 +246,37 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
         loop {
             let mut adjustments = HashMap::new();
 
-            // let msg = match recv.recv_timeout(poll_interval) {
-            //     Ok(msg) => Ok(msg),
-            //     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (),
-            //     Err(other) => panic!("got other {:?}", other)
-            // };
-
-            // loop {
-            //     match msg {
-            //         Ok(ChannelMessage::ZoneStatusChanged(id, attr)) => { adjustments.insert((id, std::mem::discriminant(&attr)), (id, attr)); }
-            //         Ok(ChannelMessage::Poison) => { return },
-            //     }
-            // }
-
-            // wait for an incoming zone attribute adjustment with a timeout.
-            // if a timeout occurs do a zone status refresh anyway (poll the amp)
-            match recv.recv_timeout(poll_interval) {
-                Ok(ChannelMessage::ZoneStatusChanged(id, attr)) => { adjustments.insert((id, std::mem::discriminant(&attr)), (id, attr)); }
-                Ok(ChannelMessage::Poison) => { return },
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (), // timeout waiting for command, refresh zone status anyway
-                Err(other) => panic!("got other {:?}", other)
-            };
-
-            // drain the channel.
-            // mqtt can deliver faster than the serialport can handle and multiple adjustments may have come while processing the last request.
-            // there is no point adjusting the same attribute multiple times.
-            // newer attribute adjustments queued for the same zone overwrite earlier ones.
-            // todo: any way to combine with above match? (probably not, given different return types of recv_timeout and try_recv)
-            loop {
-                match recv.try_recv() {
-                    Ok(ChannelMessage::ZoneStatusChanged(id, attr)) => { adjustments.insert((id, std::mem::discriminant(&attr)), (id, attr)); },
-                    Ok(ChannelMessage::Poison) => { return },
-                    Err(e) if e == std::sync::mpsc::TryRecvError::Empty => break,
+            {
+                // wait for an incoming zone attribute adjustment with a timeout.
+                // if a timeout occurs do a zone status refresh anyway (poll the amp)
+                let mut msg = match recv.recv_timeout(poll_interval) {
+                    Ok(msg) => Some(msg),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None, // timeout waiting for command, refresh zone status anyway
                     Err(other) => panic!("got other {:?}", other)
+                };
+
+                // drain the channel.
+                // mqtt can deliver faster than the serialport can handle and multiple adjustments may have come while processing the last request.
+                // there is no point adjusting the same attribute multiple times.
+                // newer attribute adjustments queued for the same zone overwrite earlier ones.
+                loop {
+                    match msg {
+                        Some(ChannelMessage::ZoneStatusChanged(id, attr)) => { adjustments.insert((id, std::mem::discriminant(&attr)), (id, attr)); }
+                        Some(ChannelMessage::Poison) => { return },
+                        None => break
+                    }
+
+                    msg = match recv.try_recv() {
+                        Ok(msg) => Some(msg),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                        Err(other) => panic!("got other {:?}", other)
+                    };
                 }
             }
 
             // apply zone attribute adjustments, if any
             for (id, attr) in adjustments.values().into_iter() {
-                debug!("adjust {} = {:?}", id, attr);
+                log::debug!("adjust {} = {:?}", id, attr);
 
                 let ids = match *id {
                     ZoneId::Zone { amp, zone } => vec![common::zone::ZoneId::Zone { amp, zone }],
@@ -343,7 +314,7 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
                     }
 
                     let attr_name = ZoneAttributeDiscriminants::from(attr).to_string().to_kebab_case();
-                    let topic = format!("{}status/zone/{}/{}", topic_base, zone_status.id, attr_name);
+                    let topic = format!("{}/status/zone/{}/{}", topic_base, zone_status.id, attr_name);
 
                     let value = {
                         use ZoneAttribute::*;
@@ -354,7 +325,7 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
                         }
                     };
 
-                    debug!("set {} = {}", topic, value);
+                    log::debug!("set {} = {}", topic, value);
         
                     mqtt.publish_json(topic, rumqttc::QoS::AtLeastOnce, true, value).unwrap(); // TODO: handle error more gracefully
                 }
@@ -390,7 +361,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut signals = Signals::new(TERM_SIGNALS)?;
     signals.forever().next(); // wait for a signal
 
-    info!("caught shutdown signal");
+    log::info!("caught shutdown signal");
 
     mqtt_client.disconnect()?;
 

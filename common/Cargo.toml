@@ -20,7 +20,8 @@ crossbeam-channel.workspace = true
 
 anyhow.workspace = true
 
-url = { version = "2.4.0", features = ["serde"] }
+url.workspace = true
+
 rustls-pemfile = "1.0.2"
 rustls-native-certs = "0.6.3"
 

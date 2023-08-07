@@ -11,6 +11,16 @@ use thiserror::Error;
 pub const MAX_AMPS: u8 = 3;
 pub const MAX_ZONES_PER_AMP: u8 = 6;
 
+pub mod ranges {
+    use std::ops::RangeInclusive;
+
+    pub const VOLUME: RangeInclusive<u8> = 0..=38;
+    pub const TREBLE: RangeInclusive<u8> = 0..=14;
+    pub const BASS: RangeInclusive<u8> = 0..=14;
+    pub const BALANCE: RangeInclusive<u8> = 0..=20;
+    pub const SOURCE: RangeInclusive<u8> = 1..=6;
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, EnumDiscriminants, Display)]
 #[strum_discriminants(derive(EnumIter, Display, Hash))]
 pub enum ZoneAttribute {
@@ -26,6 +36,37 @@ pub enum ZoneAttribute {
     KeypadConnected(bool)
 }
 
+#[derive(Error, Debug)]
+pub enum ZoneAttributeError {
+    #[error("{attr} value is out of range {range:?}")]
+    ValueOutOfRange {
+        attr: ZoneAttribute,
+        range: RangeInclusive<u8>
+    }
+}
+
+impl ZoneAttribute {
+    pub fn validate(&self) -> Result<(), ZoneAttributeError> {
+        use ZoneAttribute::*;
+
+        let (v, range) = match self {
+            Volume(v) => (v, ranges::VOLUME),
+            Treble(v) => (v, ranges::TREBLE),
+            Bass(v) => (v, ranges::BASS),
+            Balance(v) => (v, ranges::BALANCE),
+            Source(v) => (v, ranges::SOURCE),
+            _ => return Ok(()) // boolean attributes are always valid
+        };
+
+        if !range.contains(&v) {
+            Err(ZoneAttributeError::ValueOutOfRange{ attr: *self, range: range })
+            
+        } else {
+            Ok(())
+        }
+    }
+}
+
 impl ZoneAttributeDiscriminants {
     pub fn read_only(&self) -> bool {
         use ZoneAttributeDiscriminants::*;
@@ -37,24 +78,24 @@ impl ZoneAttributeDiscriminants {
         }
     }
 
-    pub fn io_range(&self) -> std::ops::RangeInclusive<u8> {
-        use ZoneAttributeDiscriminants::*;
+    // pub fn io_range(&self) -> Option<std::ops::RangeInclusive<u8>> {
+    //     use ZoneAttributeDiscriminants::*;
 
-        match self {
-            Volume => 0..=38,
-            Treble => 0..=14,
-            Bass => 0..=14,
-            Balance => 0..=20,
-            Source => 1..=6,
-            _ => 0..=1, // all other attrs are booleans
-        }
-    }
+    //     match self {
+    //         Volume => Some(0..=38),
+    //         Treble => Some(0..=14),
+    //         Bass => Some(0..=14),
+    //         Balance => Some(0..=20),
+    //         Source => Some(1..=6),
+    //         _ => None, // all other attrs are booleans
+    //     }
+    // }
 }
 
 
 #[derive(Error, Debug)]
 pub enum ZoneIdError {
-    #[error("amp is out of range ([1, {}]) for zone id {0:02}", MAX_AMPS)] // todo: use constatnt max_amps
+    #[error("amp is out of range ([1, {}]) for zone id {0:02}", MAX_AMPS)]
     AmpOutOfRange(u8),
 
     #[error("zone is out of range ([1, {}]) for zone id {0:02}", MAX_ZONES_PER_AMP)]

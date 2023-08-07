@@ -1,23 +1,13 @@
 
-// work in progress emulator
-
-use std::{collections::HashMap, net::TcpListener};
+use std::{net::TcpListener, thread, sync::{Arc, Mutex}};
 
 use clap::{command, Subcommand, Parser, ArgAction};
 use anyhow::Result;
 use common::zone::{ZoneAttribute, ZoneAttributeDiscriminants, ZoneId};
 
 
-// use clap::{Parser, Subcommand, ArgAction, CommandFactory};
-
-// use strum_macros::{EnumDiscriminants, Display, EnumVariantNames, EnumIter};
-
-
-
 mod emu {
-    use anyhow::{Context, bail};
     use common::zone::MAX_ZONES_PER_AMP;
-    use regex::Regex;
 
     use super::*;
     use std::{collections::HashMap, io::{Read, Write}, str};
@@ -74,18 +64,20 @@ mod emu {
             }
         }
     
+        /// set the attributes of one or more zones. nop if a zone doesn't exist.
         pub fn zone_set(&mut self, zone: ZoneId, attribute: ZoneAttribute) {
             for zone in zone.to_zones() {
-                match self.zones.get_mut(&zone) {
-                    Some(zone) => zone.set(attribute),
-                    None => todo!(),
+                if let Some(zone) = self.zones.get_mut(&zone) {
+                    zone.set(attribute)
                 }
             }
         }
 
-        pub fn zone_enquiry(&mut self, zone: ZoneId) -> Vec<(ZoneId, Zone)> {
-            todo!()
-            // zone.to_zones().into_iter().
+        /// get the staus of one or more zones. nop if a zone doesn't exist.
+        pub fn zone_enquiry(&mut self, zone: ZoneId) -> Vec<(ZoneId, &Zone)> {
+            zone.to_zones().into_iter().filter_map(|id| {
+                self.zones.get(&id).map(|zone| (id, zone))
+            }).collect()
         }
     
         pub fn set_pa_state(&mut self, pa: bool) {
@@ -93,184 +85,28 @@ mod emu {
                 zone.public_announcement = pa;
             } 
         }
-
-        pub fn run<S: Read + Write>(&mut self, mut stream: S) -> Result<()> {
-            enum Command {
-                ZoneEnquriry(ZoneId),
-                ZoneAttributeEnquiry(ZoneId, ZoneAttributeDiscriminants),
-                ZoneSet(ZoneId, ZoneAttribute)
-            }
-
-            fn parse_command(buffer: &[u8]) -> Result<Option<Command>> {
-                let cmd = str::from_utf8(&buffer[0..buffer.len() - 1])?;
-
-                if cmd.len() == 0 { return Ok(None) }
-
-                // TODO: convert to static
-                let zone_enquiry_re = Regex::new(r"\?(\d\d)").unwrap();
-                let zone_attr_enquiry_re = Regex::new(r"\?(\d\d)(\w\w)").unwrap();
-                let zone_set_re = Regex::new(r"<(\d\d)(\w\w)(\d\d)").unwrap();
-                let baud_set_re = Regex::new(r"<(\d+)").unwrap();
-
-
-                let cmd = if let Some(captures) = zone_enquiry_re.captures(cmd) {
-                    // zone enquiry
-                    let zone = captures.get(1).expect("capture group 1").as_str()
-                        .parse().context("expected a valid zone id")?;
-
-                    Command::ZoneEnquriry(zone)
-
-                } else if let Some(captures) = zone_attr_enquiry_re.captures(cmd) {
-                    // zone attribute enquiry
-                    let zone = captures.get(1).expect("capture group 1").as_str()
-                        .parse().context("expected a valid zone id")?;
-
-                    let attr = captures.get(2).expect("capture group 2").as_str();
-
-                    let attr = match attr {
-                        "PR" => ZoneAttributeDiscriminants::Power,
-                        "MU" => ZoneAttributeDiscriminants::Mute,
-                        "DT" => ZoneAttributeDiscriminants::DoNotDisturb,
-                        "VO" => ZoneAttributeDiscriminants::Volume,
-                        "TR" => ZoneAttributeDiscriminants::Treble,
-                        "BS" => ZoneAttributeDiscriminants::Bass,
-                        "BL" => ZoneAttributeDiscriminants::Balance,
-                        "CH" => ZoneAttributeDiscriminants::Source,
-                        _ => bail!("unknown attribute: {}", attr)
-                    };
-
-                    Command::ZoneAttributeEnquiry(zone, attr)
-
-                } else if let Some(captures) = zone_set_re.captures(cmd) {
-                    // zone set
-
-                    let zone = captures.get(1).expect("capture group 1").as_str()
-                        .parse().context("expected a valid zone id")?;
-
-                    let attr = captures.get(2).expect("capture group 2").as_str();
-
-                    let value: u8 = captures.get(3).expect("capture group 3").as_str()
-                        .parse().context("expected a valid value")?;
-
-                    // TODO: what happens on the real device if the value is out of range?
-
-                    let attr = match attr {
-                        "PR" => ZoneAttribute::Power(value != 0),
-                        "MU" => ZoneAttribute::Mute(value != 0),
-                        "DT" => ZoneAttribute::DoNotDisturb(value != 0),
-                        "VO" => ZoneAttribute::Volume(value),
-                        "TR" => ZoneAttribute::Treble(value),
-                        "BS" => ZoneAttribute::Bass(value),
-                        "BL" => ZoneAttribute::Balance(value),
-                        "CH" => ZoneAttribute::Source(value),
-                        _ => bail!("unknown attribute: {}", attr)
-                    };
-
-                    Command::ZoneSet(zone, attr)
-
-                } else if let Some(captures) = baud_set_re.captures(cmd) {
-                    let baud: u16 = captures.get(1).expect("capture group 1").as_str()
-                        .parse().context("expected a valid baud rate")?;
-
-                    todo!()
-
-                } else {
-                    bail!("unknown command: {}", cmd)
-                };
-
-                Ok(Some(cmd))
-            }
-            
-            let mut buffer = Vec::with_capacity(256);
-
-            loop {
-                {
-                    // read a byte, echo it back, and append it to the buffer.
-                    // unless a CR was sent, keep reading
-                    let mut ch = [0; 1];
-                    stream.read(&mut ch)?;
-                    stream.write(&ch)?; // echo the byte back
-
-                    buffer.extend_from_slice(&ch);
-
-                    if ch[0] != b'\r' { continue }
-
-                    // CR always gets translated to CRLF -- last char sent was a CR (and was echo'd), send LF...
-                    stream.write(b"\n")?;  // .write(b"\n#")
-                }
-
-                match parse_command(&buffer) {
-                    Ok(cmd) => {
-                        match cmd {
-                            Some(Command::ZoneEnquriry(zone)) => {
-                                for (id, zone) in self.zone_enquiry(zone) {
-                                    write!(stream, ">{}{:02}{:02}{:02}{:02}{:02}{:02}{:02}{:02}{:02}{:02}\r\n",
-                                        id,
-                                        zone.public_announcement as u8,
-                                        zone.power as u8,
-                                        zone.mute as u8,
-                                        zone.do_not_disturb as u8,
-                                        zone.volume,
-                                        zone.treble,
-                                        zone.bass,
-                                        zone.balance,
-                                        zone.source,
-                                        zone.keypad_connected as u8
-                                    )?
-                                }
-                            },
-                            Some(Command::ZoneAttributeEnquiry(zone, attr)) => {
-                                for (id, zone) in self.zone_enquiry(zone) {
-                                    let (attr, value) = match attr {
-                                        ZoneAttributeDiscriminants::PublicAnnouncement => ("PA", zone.public_announcement as u8),
-                                        ZoneAttributeDiscriminants::Power => ("PR", zone.power as u8),
-                                        ZoneAttributeDiscriminants::Mute => ("MU", zone.mute as u8),
-                                        ZoneAttributeDiscriminants::DoNotDisturb => ("DT", zone.do_not_disturb as u8),
-                                        ZoneAttributeDiscriminants::Volume => ("VO", zone.volume),
-                                        ZoneAttributeDiscriminants::Treble => ("TR", zone.treble),
-                                        ZoneAttributeDiscriminants::Bass => ("BA", zone.bass),
-                                        ZoneAttributeDiscriminants::Balance => ("BL", zone.balance),
-                                        ZoneAttributeDiscriminants::Source => ("CH", zone.source),
-                                        ZoneAttributeDiscriminants::KeypadConnected => ("LS", zone.keypad_connected as u8),
-                                    };
-
-                                    write!(stream, ">{}{}{:02}\r\n", id, attr, value)?;
-                                }
-                            }
-                            Some(Command::ZoneSet(zone, attribute)) => {
-                                self.zone_set(zone, attribute)
-                            },
-                            None => {}
-                        }
-
-                        stream.write(b"#")?
-                    },
-                    Err(err) => {
-                        let cmd = String::from_utf8_lossy(&buffer);
-                        println!("error proccessing command \"{}\": {:#}", cmd, err);
-                        
-                        stream.write(b"\r\nCommand Error.")?
-                    }
-                };
-
-                buffer.clear();
-            }
-        }
     }
 }
 
 
 mod repl {
-    use std::ops::RangeInclusive;
-
     use super::*;
+    
+    use std::ops::{RangeInclusive};
     
     use rustyline::{DefaultEditor, Editor, CompletionType, Completer};
     use rustyline::{Helper, Hinter, Validator, Highlighter};
 
+    use common::zone::ranges;
+
+    fn cast_range(range: RangeInclusive<u8>) -> RangeInclusive<i64> {
+        RangeInclusive::new(*range.start() as i64, *range.end() as i64)
+    }
+
     #[derive(Subcommand, Debug)]
     enum AdjustableAttributeCommand {
         // PA is ommitted bacuase on real hardware PA can only be toggled for all zones simultaneously
+        // which is exposed as a separate command
 
         #[command(visible_alias = "pr")]
         Power {
@@ -289,23 +125,27 @@ mod repl {
         },
         #[command(visible_alias = "vo")]
         Volume {
-            #[arg(value_parser = clap::value_parser!(u8).range(0..=38))]  // ZoneAttributeDiscriminants::Volume.io_range().into()
+            #[arg(value_parser = clap::value_parser!(u8).range(cast_range(ranges::VOLUME)))]
             value: u8
         },
         #[command(visible_alias = "tr")]
         Treble {
+            #[arg(value_parser = clap::value_parser!(u8).range(cast_range(ranges::TREBLE)))]
             value: u8
         },
         #[command(visible_alias = "ba")]
         Bass {
+            #[arg(value_parser = clap::value_parser!(u8).range(cast_range(ranges::BASS)))]
             value: u8
         },
         #[command(visible_alias = "bl")]
         Balance {
+            #[arg(value_parser = clap::value_parser!(u8).range(cast_range(ranges::BALANCE)))]
             value: u8
         },
         #[command(visible_alias = "ch")]
         Source {
+            #[arg(value_parser = clap::value_parser!(u8).range(cast_range(ranges::SOURCE)))]
             value: u8
         },
         #[command(visible_alias = "kp")]
@@ -433,7 +273,7 @@ mod repl {
                 str_cell(zone.power),
                 str_cell(zone.mute),
                 str_cell(zone.do_not_disturb),
-                str_cell(bar(zone.volume, ZoneAttributeDiscriminants::Volume.io_range())),
+                str_cell(bar(zone.volume, common::zone::ranges::VOLUME)),
                 //str_cell(slider(zone.treble + 7, ZoneAttributeDiscriminants::Treble.io_range()))
                 //int_cell(zone.volume)
 
@@ -447,7 +287,7 @@ mod repl {
         ).tabulate());
     }
 
-    pub fn main(amp: &mut emu::Amp) -> Result<()> {
+    pub fn main(amp: Arc<Mutex<emu::Amp>>) -> Result<()> {
         let config = rustyline::Config::builder()
             .auto_add_history(true)
             .completion_type(CompletionType::List)
@@ -462,18 +302,22 @@ mod repl {
                 Ok(line) => {
                     let cmd = ReplCommands::try_parse_from(line.split(" "));
 
-                    match cmd {
-                        Ok(cmd) => {
-                            match cmd {
-                                ReplCommands::Status => status(&amp),
-                                ReplCommands::AdjustZone { zone, attribute } => amp.zone_set(zone, attribute.into()),
-                                ReplCommands::PublicAnnouncement { state } => amp.set_pa_state(state),
-                                _ => todo!()
-                            }
-                        },
-                        Err(e) => {
-                            println!("error: {}", e);
-                        },
+                    {
+                        let mut amp = amp.lock().unwrap();
+
+                        match cmd {
+                            Ok(cmd) => {
+                                match cmd {
+                                    ReplCommands::Status => status(&amp),
+                                    ReplCommands::AdjustZone { zone, attribute } => amp.zone_set(zone, attribute.into()),
+                                    ReplCommands::PublicAnnouncement { state } => amp.set_pa_state(state),
+                                    _ => todo!()
+                                }
+                            },
+                            Err(e) => {
+                                println!("{e}");
+                            },
+                        }
                     }
 
                 },
@@ -488,30 +332,258 @@ mod repl {
     }
 }
 
+mod serial {
+    use super::*;
+
+    use anyhow::{Context, bail};
+
+    use regex::Regex;
+
+    use std::{io::{Read, Write}, str};
+
+    pub fn run<S: Read + Write>(amp: Arc<Mutex<emu::Amp>>, mut stream: S) -> Result<()> {
+        enum Command {
+            ZoneEnquriry(ZoneId),
+            ZoneAttributeEnquiry(ZoneId, ZoneAttributeDiscriminants),
+            ZoneSet(ZoneId, ZoneAttribute)
+        }
+
+        fn parse_command(buffer: &[u8]) -> Result<Option<Command>> {
+            let cmd = str::from_utf8(buffer)?.to_uppercase();
+
+            if cmd.len() == 0 { return Ok(None) }
+
+            // TODO: convert to static
+            let zone_enquiry_re = Regex::new(r"\?(\d\d)").unwrap();
+            let zone_attr_enquiry_re = Regex::new(r"\?(\d\d)(\w\w)").unwrap();
+            let zone_set_re = Regex::new(r"<(\d\d)(\w\w)(\d\d)").unwrap();
+            let baud_set_re = Regex::new(r"<(\d+)").unwrap();
+
+
+            let cmd = if let Some(captures) = zone_enquiry_re.captures(&cmd) {
+                // zone enquiry
+                let zone = captures.get(1).expect("capture group 1").as_str()
+                    .parse().context("expected a valid zone id")?;
+
+                Command::ZoneEnquriry(zone)
+
+            } else if let Some(captures) = zone_attr_enquiry_re.captures(&cmd) {
+                // zone attribute enquiry
+                let zone = captures.get(1).expect("capture group 1").as_str()
+                    .parse().context("expected a valid zone id")?;
+
+                let attr = captures.get(2).expect("capture group 2").as_str();
+
+                let attr = match attr {
+                    "PR" => ZoneAttributeDiscriminants::Power,
+                    "MU" => ZoneAttributeDiscriminants::Mute,
+                    "DT" => ZoneAttributeDiscriminants::DoNotDisturb,
+                    "VO" => ZoneAttributeDiscriminants::Volume,
+                    "TR" => ZoneAttributeDiscriminants::Treble,
+                    "BS" => ZoneAttributeDiscriminants::Bass,
+                    "BL" => ZoneAttributeDiscriminants::Balance,
+                    "CH" => ZoneAttributeDiscriminants::Source,
+                    _ => return Ok(None) // unknown attribute results in a nop
+                };
+
+                Command::ZoneAttributeEnquiry(zone, attr)
+
+            } else if let Some(captures) = zone_set_re.captures(&cmd) {
+                // zone set
+
+                let zone = captures.get(1).expect("capture group 1").as_str()
+                    .parse().context("expected a valid zone id")?;
+
+                let attr = captures.get(2).expect("capture group 2").as_str();
+
+                let value: u8 = captures.get(3).expect("capture group 3").as_str()
+                    .parse().context("expected a valid value")?;
+
+                let attr = match attr {
+                    "PR" | "MU" | "DT" => {
+                        let value = match value {
+                            0 => false,
+                            1 => true,
+                            _ => return Ok(None) // invalid bool results in a nop
+                        };
+
+                        match attr {
+                            "PR" => ZoneAttribute::Power(value),
+                            "MU" => ZoneAttribute::Mute(value),
+                            "DT" => ZoneAttribute::DoNotDisturb(value),
+                            _ => unreachable!()
+                        }
+                    },
+                    "VO" => ZoneAttribute::Volume(value),
+                    "TR" => ZoneAttribute::Treble(value),
+                    "BS" => ZoneAttribute::Bass(value),
+                    "BL" => ZoneAttribute::Balance(value),
+                    "CH" => ZoneAttribute::Source(value),
+                    _ => return Ok(None) // unknown attribute results in a nop
+                };
+
+                if let Err(err) = attr.validate() {
+                    // out of range values result in a nop
+                    log::warn!("serial command \"{}\": warning: {}. nop.", cmd, err);
+                    return Ok(None)
+                }
+
+                Command::ZoneSet(zone, attr)
+
+            } else if let Some(captures) = baud_set_re.captures(&cmd) {
+                let baud: u16 = captures.get(1).expect("capture group 1").as_str()
+                    .parse().context("expected a valid baud rate")?;
+
+                // todo
+                log::error!("baud rate change unimplemented.");
+                return Ok(None)
+
+            } else {
+                bail!("unknown command: {}", cmd)
+            };
+
+            Ok(Some(cmd))
+        }
+        
+        let mut cmd_buffer = Vec::with_capacity(256);
+
+        loop {
+            loop {
+                let mut ch = [0; 1];
+                stream.read(&mut ch)?;
+
+                match ch[0] {
+                    // printable ASCII
+                    0x20..=0x7F => {
+                        // echo the byte back and append to buffer
+                        stream.write(&ch)?; 
+                        cmd_buffer.extend_from_slice(&ch);
+
+                        if cmd_buffer.len() == 70 {
+                            cmd_buffer.clear();
+                            break
+                        }
+                    },
+
+                    // Backspace
+                    0x08 => {
+                        // delete a byte from the cmd buffer and write control chars
+                        if cmd_buffer.len() > 0 {
+                            stream.write(b"\x08\x20\x08")?;
+                            cmd_buffer.pop();
+                        }
+                    }
+
+                    // CR
+                    0x0D => break, // handle command
+
+                    // ESC
+                    0x1B => {
+                        // clear the cmd buffer and handle (will result in a nop)
+                        cmd_buffer.clear();
+                        break
+                    }
+
+                    _ => {}  // ignore
+                }
+            }
+
+            {
+                let mut amp = amp.lock().unwrap();
+
+                match parse_command(&cmd_buffer) {
+                    Ok(cmd) => {
+                        match cmd {
+                            Some(Command::ZoneEnquriry(zone)) => {
+                                for (id, zone) in amp.zone_enquiry(zone) {
+                                    write!(stream, "\r\n#>{}{:02}{:02}{:02}{:02}{:02}{:02}{:02}{:02}{:02}{:02}",
+                                        id,
+                                        zone.public_announcement as u8,
+                                        zone.power as u8,
+                                        zone.mute as u8,
+                                        zone.do_not_disturb as u8,
+                                        zone.volume,
+                                        zone.treble,
+                                        zone.bass,
+                                        zone.balance,
+                                        zone.source,
+                                        zone.keypad_connected as u8
+                                    )?
+                                }
+                            },
+                            Some(Command::ZoneAttributeEnquiry(zone, attr)) => {
+                                for (id, zone) in amp.zone_enquiry(zone) {
+                                    let (attr, value) = match attr {
+                                        ZoneAttributeDiscriminants::PublicAnnouncement => ("PA", zone.public_announcement as u8),
+                                        ZoneAttributeDiscriminants::Power => ("PR", zone.power as u8),
+                                        ZoneAttributeDiscriminants::Mute => ("MU", zone.mute as u8),
+                                        ZoneAttributeDiscriminants::DoNotDisturb => ("DT", zone.do_not_disturb as u8),
+                                        ZoneAttributeDiscriminants::Volume => ("VO", zone.volume),
+                                        ZoneAttributeDiscriminants::Treble => ("TR", zone.treble),
+                                        ZoneAttributeDiscriminants::Bass => ("BA", zone.bass),
+                                        ZoneAttributeDiscriminants::Balance => ("BL", zone.balance),
+                                        ZoneAttributeDiscriminants::Source => ("CH", zone.source),
+                                        ZoneAttributeDiscriminants::KeypadConnected => ("LS", zone.keypad_connected as u8),
+                                    };
+
+                                    write!(stream, "\r\n#>{}{}{:02}", id, attr, value)?;
+                                }
+                            }
+                            Some(Command::ZoneSet(zone, attribute)) => {
+                                amp.zone_set(zone, attribute)
+                            },
+                            None => {}
+                        }
+                    },
+                    Err(err) => {
+                        let cmd = String::from_utf8_lossy(&cmd_buffer);
+                        println!("serial command \"{}\": error: {:#}", cmd, err);
+                        
+                        stream.write(b"\r\n#\r\nCommand Error.")?;
+                    }
+                };
+            }
+
+            cmd_buffer.clear();
+
+            stream.write(b"\r\n#")?;
+        }
+    }
+}
+
 
 #[derive(Parser)]
 struct Arguments {
+    /// address to listen on for "serial" commands 
+    #[arg(default_value = "0.0.0.0:9955")]
+    address: String,
+
+    /// number of amplifiers to emulate [1..3]
+    #[arg(long, default_value_t = 1)]
+    #[arg(value_parser = clap::value_parser!(u8).range(1..3))]
     amps: u8
 }
 
 
 fn main() -> Result<()> {
-    //let args = Arguments::parse();
+    let args = Arguments::parse();
 
-    let mut amp = emu::Amp::new(1);
+    let amp = Arc::new(Mutex::new(emu::Amp::new(args.amps)));
 
-    let listener = TcpListener::bind("127.0.0.1:9955")?;
+    thread::spawn({
+        let amp = amp.clone();
 
-    for stream in listener.incoming() {
-        let stream = stream?;
-        println!("Got connection {:?}", stream.peer_addr());
-        amp.run(stream)?;
-    }
+        move || {
+            let listener = TcpListener::bind(args.address).unwrap();
 
-    Ok(())
+            for stream in listener.incoming() {
+                let stream = stream.unwrap();
+                println!("Got connection {:?}", stream.peer_addr());
 
+                serial::run(amp.clone(), stream).unwrap();
+            }
+        }
+    });
 
-
-    // repl::main(&amp)
-    
+    repl::main(amp.clone())
 }

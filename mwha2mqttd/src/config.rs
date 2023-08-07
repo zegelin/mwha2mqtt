@@ -11,7 +11,7 @@ use thiserror::Error;
 
 use crate::serial::{BaudConfig, BAUD_RATES, AdjustBaudConfig};
 
-use common::{ids::SourceId, mqtt::MqttConfig};
+use common::{ids::SourceId, mqtt::MqttConfig, zone::{MAX_AMPS, MAX_ZONES_PER_AMP}};
 
 
 impl <'de>Deserialize<'de> for BaudConfig {
@@ -43,15 +43,6 @@ impl <'de>Deserialize<'de> for BaudConfig {
                     E: de::Error, {
 
                 Err(de::Error::invalid_value(de::Unexpected::Str("noo"), &self))
-
-                // match v.try_into::<u32>() {
-                //     Ok(v) => {
-                //         todo!()
-                //     },
-                //     Err(_) => Err(de::Error::invalid_value(de::Unexpected::Signed(v.into()), &self)),
-                // }
-
-                
             }
         }
         
@@ -83,15 +74,6 @@ impl <'de>Deserialize<'de> for AdjustBaudConfig {
                     v => Err(de::Error::invalid_value(de::Unexpected::Str(v), &self))
                 }
             }
-
-            
-
-            // fn visit_i32<E>(self, v: i32) -> Result<Self::Value, E>
-            //     where
-            //         E: de::Error, {
-
-            //     Err(de::Error::invalid_value(de::Unexpected::Str("noo"), &self))
-            // }
         }
         
         deserializer.deserialize_any(AdjustBaudConfigVisitor)
@@ -224,13 +206,13 @@ impl TryFrom<u8> for ZoneId {
         }
 
         let amp = match amp {
-            1..=3 => amp,
+            1..=MAX_AMPS => amp,
             _ => return Err(ZoneIdError::AmpOutOfRange(value))
         };
 
         match zone {
             0 => Ok(ZoneId::Amp(amp)),
-            1..=6  => Ok(ZoneId::Zone { amp, zone }),
+            1..=MAX_ZONES_PER_AMP  => Ok(ZoneId::Zone { amp, zone }),
             _ => Err(ZoneIdError::ZoneOutOfRange(value))
         }
     }

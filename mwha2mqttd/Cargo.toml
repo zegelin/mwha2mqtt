@@ -5,7 +5,7 @@ edition = "2021"
 
 
 [dependencies]
-common.path = "../common"
+common = { path = "../common" }
 
 regex.workspace = true
 clap.workspace = true
@@ -21,20 +21,18 @@ strum.workspace = true
 strum_macros.workspace = true
 
 
+anyhow.workspace = true
+thiserror.workspace = true
+
+url.workspace = true
+
 serialport = "4.2.0"
 
-
-# toml = "0.7.3"
-#
 figment = { version = "0.10.8", features = ["toml"] }
 humantime-serde = "1.1.1"
 
-# 
 heck = "0.4.1"
-# liquid = "0.26.1"
-# liquid-core = "0.26.1"
-#enum_dispatch = "0.3.11"
-# io-enum = "1.1.0"
+
 delegate = "0.9.0"
 void = "1.0.2"
 # 
@@ -42,10 +40,5 @@ void = "1.0.2"
 simplelog = "0.12.1"
 rand = "0.8.5"
 signal-hook = "0.3.15"
-anyhow = "1.0.71"
-thiserror = "1.0.40"
-url = { version = "2.4.0", features = ["serde"] }
-rustls-pemfile = "1.0.2"
-rustls-native-certs = "0.6.3"
 
 
