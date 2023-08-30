@@ -3,7 +3,7 @@ use std::str;
 use anyhow::{bail, Context};
 use crossbeam_channel::{Sender, Receiver, select};
 use log::{warn, error, info};
-use rumqttc::{Client, Publish, Connection, Event, Packet, MqttOptions, tokio_rustls::rustls::{RootCertStore, Certificate, ClientConfig, PrivateKey}, ConnectionError};
+use rumqttc::{Client, Publish, Connection, Event, Packet, MqttOptions, tokio_rustls::rustls::{RootCertStore, Certificate, ClientConfig, PrivateKey}, ConnectionError, Subscribe};
 use serde_json::Value;
 use serde::{Deserialize, de::DeserializeOwned};
 use figment::value::magic::RelativePathBuf;
@@ -25,10 +25,13 @@ impl PublishJson for Client {
 
 type HandlerFn = Box<dyn Fn(&Publish) + Send>;
 
+type CoHashMap<A, B> = Arc<Mutex<HashMap<A, B>>>;
+
 /// handles MQTT notifications and topic subscriptions, delegating incoming packets to regestered topic handlers 
 pub struct MqttConnectionManager {
     client: Client,
-    topic_handlers: Arc<Mutex<HashMap<String, HandlerFn>>>,
+    outgoing_topic_handlers_send: Sender<(String, HandlerFn)>,
+    topic_handlers: CoHashMap<String, HandlerFn>,
     handler_thread: JoinHandle<()>,
     connected_recv: Receiver<()>,
     errors_recv: Receiver<ConnectionError>
@@ -36,36 +39,53 @@ pub struct MqttConnectionManager {
 
 impl MqttConnectionManager {
     pub fn new(client: Client, connection: Connection) -> MqttConnectionManager {
+        let (outgoing_topic_handlers_send, outgoing_topic_handlers_recv) = crossbeam_channel::unbounded();
         let topic_handlers = Arc::new(Mutex::new(HashMap::new()));
 
         let (connected_send, connected_recv) = crossbeam_channel::bounded(1);
         let (errors_send, errors_recv) = crossbeam_channel::bounded(1);
 
-        let handler_thread = MqttConnectionManager::spawn_handler_thread(connection, topic_handlers.clone(), connected_send, errors_send);
+        let handler_thread = MqttConnectionManager::spawn_handler_thread(
+            connection,
+            outgoing_topic_handlers_recv,
+            topic_handlers.clone(),
+            connected_send,
+            errors_send
+        );
 
         MqttConnectionManager {
             client,
-            topic_handlers: topic_handlers,
+            outgoing_topic_handlers_send,
+            topic_handlers,
             handler_thread,
             connected_recv,
             errors_recv
         }
     }
 
-    fn spawn_handler_thread(mut connection: Connection, topic_handlers: Arc<Mutex<HashMap<String, HandlerFn>>>, connected_send: Sender<()>, errors_send: Sender<ConnectionError>) -> JoinHandle<()> {
+    fn spawn_handler_thread(mut connection: Connection,
+        outgoing_topic_handlers_recv: Receiver<(String, HandlerFn)>,
+        topic_handlers: CoHashMap<String, HandlerFn>,
+        connected_send: Sender<()>,
+        errors_send: Sender<ConnectionError>
+    ) -> JoinHandle<()> {
         thread::Builder::new()
             .name("MQTT notification handler".to_string())
             .spawn(move || {
+                let mut pending_topic_handlers = HashMap::new();
+
                 for notification in connection.iter() {
+                    log::debug!("mqtt notif: {:?}", notification);
+
                     match notification {
                         Ok(Event::Incoming(Packet::ConnAck(_))) => {
-                            connected_send.send(()).expect("unable to send connected");
+                            connected_send.send(()).expect("send on connected_send");
                         },
                         Ok(Event::Incoming(Packet::Publish(publish))) => {
                             // incoming message for a subscription
 
                             // todo: handle wildcards
-                            match topic_handlers.lock().expect("unable to lock topic_handlers").get(&publish.topic) {
+                            match topic_handlers.lock().expect("lock topic_handlers").get(&publish.topic) {
                                 Some(handler) => handler(&publish),
                                 None => log::warn!("received MQTT Publish packet for unknown subscription. topic = {}", publish.topic),
                             }
@@ -74,11 +94,35 @@ impl MqttConnectionManager {
                             // TODO: notify anyone waiting for disconnect
                             return
                         },
-                        Ok(_) => (),
-                        Err(e) => errors_send.send(e).expect("unable to send error"),
+
+                        // deferred topic handler registration on suback
+                        Ok(Event::Outgoing(rumqttc::Outgoing::Subscribe(pkid))) => {
+                            let handler = outgoing_topic_handlers_recv.recv().expect("recv from outgoing_topic_handlers_recv");
+
+                            pending_topic_handlers.insert(pkid, handler);
+                        },
+                        Ok(Event::Incoming(Packet::SubAck(suback))) => {
+                            // TODO: handle suback.return_codes
+
+                            let handler = pending_topic_handlers.remove(&suback.pkid);
+
+                            match handler {
+                                Some((topic, handler_fn)) => {
+                                    topic_handlers.lock().expect("lock topic_handlers")
+                                        .insert(topic, handler_fn);
+                                },
+                                None => log::warn!("received MQTT SubAck packet for unknown subscription"),
+                            }
+                        }
+
+                        Ok(_) => {},
+                        Err(e) => {
+                            log::error!("mqtt error: {}", e);
+                            errors_send.send(e).expect("send on errors_send");
+                        },
                     }
                 }
-            }).expect("unable to spawn MQTT notification handler thread")
+            }).expect("spawn MQTT notification handler thread")
     }
 
     pub fn wait_connected(&self) -> anyhow::Result<()> {
@@ -90,13 +134,10 @@ impl MqttConnectionManager {
     }
 
     pub fn wait_disconnected(&self) -> anyhow::Result<()> {
-        // self.handler_thread.join().unwrap();
-
-        // Ok(())
         todo!()
     }
 
-    pub fn subscribe<F, S>(&mut self, topic: S, qos: rumqttc::QoS, handler: F) -> Result<(), rumqttc::ClientError>
+    pub fn subscribe<F, S>(&mut self, topic: S, qos: rumqttc::QoS, handler: F) -> anyhow::Result<(), rumqttc::ClientError>
     where
         F: Fn(&Publish),
         F: Send + 'static,
@@ -104,14 +145,16 @@ impl MqttConnectionManager {
     {
         let topic = topic.into();
 
-        self.topic_handlers.lock().expect("unable to lock topic_handlers").insert(topic.clone(), Box::new(handler));
+        log::debug!("Subscribe to {}", topic);
+
+        self.outgoing_topic_handlers_send.send((topic.clone(), Box::new(handler))).expect("send on outgoing_topic_handlers_send");
         self.client.subscribe(topic, qos)
     }
 
     pub fn subscribe_json<T, F, S>(&mut self, topic: S, qos: rumqttc::QoS, handler: F) -> Result<(), rumqttc::ClientError>
     where
         T: DeserializeOwned,
-        F: Fn(&Publish, &T), // TODO: change T to Result<T> so that errors can be propagated to handlers
+        F: Fn(&Publish, T), // TODO: change T to Result<T> so that errors can be propagated to handlers
         F: Send + 'static,
         S: Into<String>
     {
@@ -122,6 +165,13 @@ impl MqttConnectionManager {
             let topic = topic.clone();
 
             move |publish: &Publish|  {
+                // fn parse_payload<T: DeserializeOwned>(publish: &Publish) -> anyhow::Result<T> {
+                //     let payload = str::from_utf8(&publish.payload)?;
+                //     Ok(serde_json::from_str(payload)?)
+                    
+                // }
+                
+
                 let payload = match str::from_utf8(&publish.payload) {
                     Ok(s) => s,
                     Err(err) => {                        
@@ -131,7 +181,7 @@ impl MqttConnectionManager {
                 };
     
                 let payload: T = serde_json::from_str(payload).unwrap();
-                handler(publish, &payload);
+                handler(publish, payload);
             }
         };
         
@@ -143,10 +193,8 @@ impl MqttConnectionManager {
         S: Into<String>
     {
         todo!();
-
-        self.client.unsubscribe(topic)?;
-
-        //self.topic_handlers.loc
+        
+        self.client.unsubscribe(topic)
     }
 }
 
@@ -195,22 +243,6 @@ fn resolve_credentials_path(path: &RelativePathBuf) -> anyhow::Result<PathBuf> {
 
     } else {
         Ok(path)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_resolve_credentials_path() {
-        assert_eq!(resolve_credentials_path(&RelativePathBuf::from(Path::new("credentials"))).unwrap(), PathBuf::from("credentials"));
-
-        assert_eq!(resolve_credentials_path(&RelativePathBuf::from(Path::new("$CREDENTIALS_DIRECTORY/credentials"))).is_err(), true);
-
-        temp_env::with_var("CREDENTIALS_DIRECTORY", Some("/creds/"), || {
-            assert_eq!(resolve_credentials_path(&RelativePathBuf::from(Path::new("$CREDENTIALS_DIRECTORY/credentials"))).unwrap(), PathBuf::from("/creds/credentials"));
-        });
     }
 }
 
@@ -358,4 +390,40 @@ pub fn options_from_config(config: &MqttConfig, default_client_id: &str) -> anyh
     };
 
     Ok(options)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_credentials_path() {
+        assert_eq!(resolve_credentials_path(&RelativePathBuf::from(Path::new("credentials"))).unwrap(), PathBuf::from("credentials"));
+
+        assert_eq!(resolve_credentials_path(&RelativePathBuf::from(Path::new("$CREDENTIALS_DIRECTORY/credentials"))).is_err(), true);
+
+        temp_env::with_var("CREDENTIALS_DIRECTORY", Some("/creds/"), || {
+            assert_eq!(resolve_credentials_path(&RelativePathBuf::from(Path::new("$CREDENTIALS_DIRECTORY/credentials"))).unwrap(), PathBuf::from("/creds/credentials"));
+        });
+    }
+
+    #[test]
+    fn test_config_topic_base() {
+        fn config_with_url(url: &str) -> MqttConfig {
+            MqttConfig {
+                url: url::Url::parse(url).unwrap(),
+                srv_lookup: false,
+                ca_certs: None,
+                client_certs: None,
+                client_key: None,
+            }
+        }
+
+        assert_eq!(config_with_url("mqtt://localhost").topic_base("default/"), "default/");
+        assert_eq!(config_with_url("mqtt://localhost/").topic_base("default/"), "");
+        assert_eq!(config_with_url("mqtt://localhost/base").topic_base("default/"), "base/");
+        assert_eq!(config_with_url("mqtt://localhost/base/").topic_base("default/"), "base/");
+        assert_eq!(config_with_url("mqtt://localhost//base/").topic_base("default/"), "/base/");
+    }
 }

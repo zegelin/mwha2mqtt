@@ -112,7 +112,7 @@ poll_interval = "100 ms"
 # - 'enabled': bool, source enable state.
 #       Clients may choose to respect this value and hide and/or prevent the selection of a disabled source.
 #       This setting does not prevent changing a zones' source to a disabled sources via MQTT, the zone keypads or
-#       the hardware PA trigger (which switches all zones to source 1).
+#       the hardware PA trigger (which switches all zones to source 1 temporarily).
 # Sources default to a name of "Source 𝘯" (where 𝘯 is the source number), if left unspecified.
 # Sources default to enabled.
 
@@ -129,25 +129,28 @@ poll_interval = "100 ms"
 # A table of zone ids to their names.
 # Zones not listed will not report status or accept adjustments via MQTT.
 #
-# A zone id is a 2-digit number: AZ
-# The first digit (A) is the amplifier number, and valid values are 1 through 3 (inclusive), or 0 (see below).
-# The second digit (Z) is the zone number on amplifier A, and valid values are 1 through 6 (inclusive), or 0 (see below).
-# Unless you have multiple amps connected via the "expansion connector" ribbon cable the A should always be 1.
+# A zone id is a 2-digit zone identifier in the format "AZ".
+# The first digit "A" is the amplifier number, and valid values are 1 through 3 (inclusive), or 0 (see below).
+# The second digit "Z" is the zone number on amplifier "A", and valid values are 1 through 6 (inclusive), or 0 (see below).
 #
-# When A and Z are both 0 (id 00), this is a special zone representing all zones, aka "the system". No status will be
-# reported for this "zone", however adjustments sent to this zone will adjust all zones (on every amp) simultaniously.
-# 
-# When A is [1, 3], Z may be 0 (id 10, 20, and 30), this is a special zone representing all zones on amp A. No status will be
-# reported for this "zone", however adjustments sent to this zone will adjust all zones on amp A simultaniously.
+# "A" should always be 1 or 0 unless you have multiple amps connected via the "expansion connector" ribbon cable.
+#
+# Zone IDs refer to physical zones unless their ID contains a 0 which instead refers to a virtual zone.
+#
+# ID 00 is a virtual zone representing all zones (aka "the system").
+# No attribute status will be reported for this zone. However, adjustments sent to this zone will adjust all zones on every amp simultaniously.
+#
+# IDs 10, 20, and 30 are virtual zones representing all zones on amp 1, 2 and 3 (respectively).
+# No status will be reported for these zones. However, adjustments sent to these zones will adjust all zones on amp A simultaniously.
 #
 # Valid zone ids are:
-# 11 through 16: Zones on amp 1 [Master].
-# 21 through 26: Zones on amp 2 [Slave 1].
-# 31 through 36: Zones on amp 3 [Slave 2].
-# 00: the "System" zone, adjusts all zones, no status updates.
-# 10: Amp 1 zone, adjusts all zones on amp 1, no status updates.
-# 20: Amp 2 zone, adjusts all zones on amp 2, no status updates.
-# 30: Amp 3 zone, adjusts all zones on amp 3, no status updates.
+# 11 through 16: Physical zones on amp 1 ["Master"].
+# 21 through 26: Physical zones on amp 2 ["Slave 1"].
+# 31 through 36: Physical zones on amp 3 ["Slave 2"].
+# 00: Virtual "system" zone, adjusts all zones, no status updates.
+# 10: Virtual amp 1 zone, adjusts all zones on amp 1, no status updates.
+# 20: Virtual amp 2 zone, adjusts all zones on amp 2, no status updates.
+# 30: Virtual amp 3 zone, adjusts all zones on amp 3, no status updates.
 
 00 = "Whole Home Audio"
 10 = "Master Amp"

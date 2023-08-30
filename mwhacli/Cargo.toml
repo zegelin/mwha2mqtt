@@ -15,3 +15,7 @@ url.workspace = true
 rumqttc.workspace = true
 
 simplelog = "0.12.1"
+
+crossbeam-channel.workspace = true
+
+tokio = { version = "1.29.1", features = ["full"] }

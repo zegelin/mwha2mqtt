@@ -7,6 +7,7 @@ use std::net::TcpStream;
 use std::str;
 
 use anyhow::bail;
+use itertools::Itertools;
 use log::debug;
 
 use anyhow::{Context, Result};
@@ -93,7 +94,6 @@ impl Amp {
         Ok(buffer)
     }
 
-	
 	fn exec_command(&mut self, command: &[u8], expected_responses: usize) -> Result<Vec<Vec<u8>>> {
 		// write command
         self.port.write(command)?;
@@ -139,9 +139,17 @@ impl Amp {
     }
 
     pub fn zone_enquiry(&mut self, id: ZoneId) -> Result<Vec<ZoneStatus>> {
+        if let ZoneId::System = id {
+            return id.to_amps().into_iter()
+                .map(|amp| self.zone_enquiry(amp))
+                .flatten_ok()
+                .collect();
+        }
+
         let (amp, zone, expected_responses) = match id {
             ZoneId::Zone { amp, zone } => (amp, zone, 1),
-            ZoneId::Amp(amp) => (amp, 0, 6)
+            ZoneId::Amp(amp) => (amp, 0, 6),
+            ZoneId::System => unreachable!()
         };
 
         let cmd = format!("?{:}{:}", amp, zone);
@@ -181,6 +189,12 @@ impl Amp {
     }
 
     pub fn set_zone_attribute(&mut self, id: ZoneId, attr: ZoneAttribute) -> Result<()> {
+        if let ZoneId::System = id {
+            return id.to_amps().into_iter()
+                .map(|amp| self.set_zone_attribute(amp, attr))
+                .collect();
+        }
+
         attr.validate()?;
 
         let (attr, val) = {

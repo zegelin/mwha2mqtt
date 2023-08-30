@@ -1,6 +1,9 @@
-use std::{str::FromStr, fmt::Display, num::ParseIntError};
+use std::{str::FromStr, fmt::Display, num::ParseIntError, ops::RangeInclusive};
 
+use serde::{Serialize, Deserialize};
 use thiserror::Error;
+
+pub const SOURCES: RangeInclusive<u8> = 1..=6;
 
 #[derive(Error, Debug)]
 pub enum SourceIdError {
@@ -17,14 +20,14 @@ pub enum SourceIdError {
 }
 
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Copy, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct SourceId(u8);
 
-// impl SourceId {
-//     fn all() -> Vec<SourceId> {
-//         (1..=6).into_iter().map(SourceId::into).collect()
-//     }
-// }
+impl SourceId {
+    pub fn all() -> Vec<SourceId> {
+        (1..=6).into_iter().map(SourceId).collect()
+    }
+}
 
 impl FromStr for SourceId {
     type Err = SourceIdError;

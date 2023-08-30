@@ -27,5 +27,7 @@ rustls-native-certs = "0.6.3"
 
 figment.workspace = true
 
+heck = "0.4.1"
+
 [dev-dependencies]
 temp-env = "0.3.4"

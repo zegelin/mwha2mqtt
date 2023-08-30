@@ -23,11 +23,11 @@ use common::zone::ZoneAttributeDiscriminants;
 use clap::Parser;
 use clap::command;
 
+use common::zone::ZoneId;
 use config::AmpConfig;
 use config::Config;
 use config::ZoneConfig;
 
-use config::ZoneId;
 use log::LevelFilter;
 use rumqttc::Client;
 use rumqttc::LastWill;
@@ -39,8 +39,6 @@ use signal_hook::consts::TERM_SIGNALS;
 use signal_hook::iterator::Signals;
 use simplelog::SimpleLogger;
 use strum::IntoEnumIterator;
-
-use heck::ToKebabCase;
 
 use std::str;
 
@@ -65,7 +63,7 @@ struct Args {
 fn connect_mqtt(config: &MqttConfig) -> Result<(Client, MqttConnectionManager, String)> {
     let mut options = common::mqtt::options_from_config(config, "mwha2mqttd")?;
 
-    let topic_base = config.topic_base("mwha");
+    let topic_base = config.topic_base("mwha/");
 
     options.set_last_will(LastWill::new(format!("{}connected", topic_base), "0", rumqttc::QoS::AtLeastOnce, true));
 
@@ -85,20 +83,19 @@ fn connect_mqtt(config: &MqttConfig) -> Result<(Client, MqttConnectionManager, S
 
 /// establish a connection to the amp, via either serial or TCP
 fn connect_amp(config: &Config) -> Result<Amp> {
-    let port: Box<dyn Port> = if let Some(tcp) = &config.tcp {
-        let stream = TcpStream::connect(&tcp.address)?;
-        stream.set_read_timeout(Some(tcp.common.read_timeout))?;
+    let port: Box<dyn Port> = match &config.port {
+        config::PortConfig::Serial(serial) => {
+            let serial = AmpSerialPort::new(&serial.device, serial.baud, serial.adjust_baud, serial.reset_baud, serial.common.read_timeout)
+                .context("failed to open serial port")?;
 
-        Box::new(stream)
-
-    } else if let Some(serial) = &config.serial {
-        let serial = AmpSerialPort::new(&serial.device, serial.baud, serial.adjust_baud, serial.reset_baud, serial.common.read_timeout)
-            .context("failed to open serial port")?;
-
-        Box::new(serial)
-
-    } else {
-        bail!("either serial or tcp port configuration required")
+            Box::new(serial)
+        },
+        config::PortConfig::Tcp(tcp) => {
+            let stream = TcpStream::connect(&tcp.address)?;
+            stream.set_read_timeout(Some(tcp.common.read_timeout))?;
+    
+            Box::new(stream)
+        },
     };
 
     Ok(Amp::new(port)?)
@@ -117,7 +114,7 @@ fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, Zo
             // don't subscribe/install handlers for read-only attributes
             if attr.read_only() { continue };
 
-            let topic = format!("{}/set/zone/{}/{}", topic_base, zone_id, attr.to_string().to_kebab_case());
+            let topic = attr.mqtt_set_topic(topic_base, &zone_id);
 
             // {
             //     use ZoneAttributeDiscriminants::*;
@@ -195,6 +192,17 @@ fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, Zo
 fn publish_metadata(mqtt: &mut Client, config: &Config, topic_base: &str) -> Result<()> {
     mqtt.publish(format!("{}connected", topic_base), rumqttc::QoS::AtLeastOnce, true, "2")?;
 
+    // amp metadata
+    if let Some(&model) = config.amp.model {
+        mqtt.publish_json(format!("{}status/amp/model", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(model))?;
+    }
+    if let Some(manufacturer) = config.amp.manufacturer {
+        mqtt.publish_json(format!("{}status/amp/manufacturer", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(manufacturer))?;
+    }
+    if let Some(serial) = config.amp.serial {
+        mqtt.publish_json(format!("{}status/amp/serial", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(serial))?;
+    }
+
     // source metadata
     for (source_id, source_config) in &config.amp.sources {
         let topic_base = format!("{}status/source/{}/", topic_base, source_id);
@@ -211,14 +219,6 @@ fn publish_metadata(mqtt: &mut Client, config: &Config, topic_base: &str) -> Res
         let topic_base = format!("{}status/zone/{}/", topic_base, zone_id);
 
         mqtt.publish_json(format!("{}name", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(zone_config.name))?;
-
-        let zone_type = match zone_id {
-            ZoneId::Zone {..} => "zone",
-            ZoneId::Amp(_) => "amp",
-            ZoneId::System => "system",
-        };
-
-        mqtt.publish_json(format!("{}type", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(zone_type))?;
     }
 
     Ok(())
@@ -228,12 +228,12 @@ fn publish_metadata(mqtt: &mut Client, config: &Config, topic_base: &str) -> Res
 fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, topic_base: &str, recv: Receiver<ChannelMessage>) -> JoinHandle<()> {
     // get the zones specifically configured for publish (ignore amps and system)
     let zone_ids = config.zones.keys().filter_map(|z| match z {
-        ZoneId::Zone { amp, zone } => Some(common::zone::ZoneId::Zone { amp: *amp, zone: *zone }),
+        ZoneId::Zone { amp, zone } => Some(ZoneId::Zone { amp: *amp, zone: *zone }),
         _ => None,
     }).collect::<HashSet<_>>();
 
     // coalesce zone ids into amp ids (for bulk query)
-    let amp_ids = zone_ids.iter().map(common::zone::ZoneId::to_amp).collect::<HashSet<common::zone::ZoneId>>();
+    let amp_ids = zone_ids.iter().flat_map(ZoneId::to_amps).collect::<HashSet<_>>();
 
     let poll_interval = config.poll_interval;
     let topic_base = topic_base.to_string();
@@ -241,7 +241,7 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
     let mut mqtt = mqtt.clone();
 
     thread::spawn(move || {
-        let mut previous_statuses: HashMap<common::zone::ZoneId, amp::ZoneStatus> = HashMap::new();
+        let mut previous_statuses: HashMap<ZoneId, amp::ZoneStatus> = HashMap::new();
 
         loop {
             let mut adjustments = HashMap::new();
@@ -277,20 +277,7 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
             // apply zone attribute adjustments, if any
             for (id, attr) in adjustments.values().into_iter() {
                 log::debug!("adjust {} = {:?}", id, attr);
-
-                let ids = match *id {
-                    ZoneId::Zone { amp, zone } => vec![common::zone::ZoneId::Zone { amp, zone }],
-                    ZoneId::Amp(amp) => vec![common::zone::ZoneId::Amp(amp)],
-                    ZoneId::System => vec![
-                        common::zone::ZoneId::Amp(1),
-                        common::zone::ZoneId::Amp(2),
-                        common::zone::ZoneId::Amp(3)
-                    ],
-                };
-
-                for id in ids {
-                    amp.set_zone_attribute(id, *attr).unwrap(); // TODO: handle error more gracefully
-                }
+                amp.set_zone_attribute(*id, *attr).unwrap(); // TODO: handle error more gracefully
             }
 
             // get zone statuses for active amps
@@ -313,8 +300,7 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
                         continue;
                     }
 
-                    let attr_name = ZoneAttributeDiscriminants::from(attr).to_string().to_kebab_case();
-                    let topic = format!("{}/status/zone/{}/{}", topic_base, zone_status.id, attr_name);
+                    let topic = ZoneAttributeDiscriminants::from(attr).mqtt_status_topic(&topic_base, &zone_status.id);
 
                     let value = {
                         use ZoneAttribute::*;

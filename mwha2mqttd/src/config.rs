@@ -1,17 +1,15 @@
-use std::{io, path::PathBuf, collections::HashMap, time::Duration, str::FromStr, marker::PhantomData, fmt::{self, Display}, hash::Hash, num::ParseIntError};
+use std::{path::PathBuf, collections::HashMap, time::Duration, str::FromStr, marker::PhantomData, fmt};
 
-use figment::{Figment, providers::{Format, Toml}, value::magic::RelativePathBuf};
-use serde::{Deserialize, Deserializer, de::{Visitor, self, MapAccess}};
+use figment::{Figment, providers::{Format, Toml}};
+use serde::{Deserialize, Deserializer, de::{Visitor, self, MapAccess}, Serialize};
 
 use void::Void;
 
 use anyhow::Result;
 
-use thiserror::Error;
-
 use crate::serial::{BaudConfig, BAUD_RATES, AdjustBaudConfig};
 
-use common::{ids::SourceId, mqtt::MqttConfig, zone::{MAX_AMPS, MAX_ZONES_PER_AMP}};
+use common::{ids::SourceId, mqtt::MqttConfig, zone::ZoneId};
 
 
 impl <'de>Deserialize<'de> for BaudConfig {
@@ -89,7 +87,7 @@ pub struct CommonPortConfig {
 }
 
 impl CommonPortConfig {
-    fn default_read_timeout() -> Duration {Duration::from_secs(1)}
+    fn default_read_timeout() -> Duration { Duration::from_secs(1) }
 }
 
 
@@ -115,7 +113,7 @@ impl SerialConfig {
 
     fn default_adjust_baud() -> AdjustBaudConfig { AdjustBaudConfig::Off }
     
-    fn default_reset_baud() -> bool {true}
+    fn default_reset_baud() -> bool { true }
 }
 
 
@@ -129,7 +127,7 @@ pub struct TcpConfig {
 }
 
 
-#[derive(Clone, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct SourceConfig {
     pub name: String,
 
@@ -138,7 +136,7 @@ pub struct SourceConfig {
 }
 
 impl SourceConfig {
-    fn default_enabled() -> bool {true}
+    fn default_enabled() -> bool { true }
 }
 
 impl FromStr for SourceConfig {
@@ -153,7 +151,7 @@ impl FromStr for SourceConfig {
 }
 
 
-#[derive(Clone, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ZoneConfig {
     pub name: String
 }
@@ -169,88 +167,10 @@ impl FromStr for ZoneConfig {
 }
 
 
-/// a config ZoneId that has the special "System" zone (00)
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub enum ZoneId {
-    Zone { amp: u8, zone: u8 },
-    Amp(u8),
-    System
-}
-
-#[derive(Error, Debug)]
-pub enum ZoneIdError {
-    #[error("amp is out of range ([1, 3]) for zone id {0:02}")]
-    AmpOutOfRange(u8),
-
-    #[error("zone is out of range ([1, 6]) for zone id {0:02}")]
-    ZoneOutOfRange(u8),
-
-    #[error("cannot parse \"{value}\" as zone id ({source})")]
-    ParseFailure {
-        value: String,
-
-         #[source]
-         source: ParseIntError,
-    }
-}
-
-impl TryFrom<u8> for ZoneId {
-    type Error = ZoneIdError;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        let amp = value / 10;
-        let zone = value % 10;
-
-        if amp == 0 && zone == 0 {
-            return Ok(ZoneId::System);
-        }
-
-        let amp = match amp {
-            1..=MAX_AMPS => amp,
-            _ => return Err(ZoneIdError::AmpOutOfRange(value))
-        };
-
-        match zone {
-            0 => Ok(ZoneId::Amp(amp)),
-            1..=MAX_ZONES_PER_AMP  => Ok(ZoneId::Zone { amp, zone }),
-            _ => Err(ZoneIdError::ZoneOutOfRange(value))
-        }
-    }
-}
-
-impl From<&ZoneId> for u8 {
-    fn from(value: &ZoneId) -> Self {
-        let (amp, zone) = match value {
-            ZoneId::Zone { amp, zone } => (*amp, *zone),
-            ZoneId::Amp(amp) => (*amp, 0),
-            ZoneId::System => (0, 0),
-        };
-
-        (amp * 10) + zone
-    }
-}
-
-impl FromStr for ZoneId {
-    type Err = ZoneIdError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let i = s.parse::<u8>().map_err(|e| ZoneIdError::ParseFailure{ value: s.to_string(), source: e })?;
-        ZoneId::try_from(i)
-    }
-}
-
-impl Display for ZoneId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let id: u8 = self.into();
-        
-        write!(f, "{:02}", id)
-    }
-}
-
-
-#[derive(Clone, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(default)]
 pub struct AmpConfig {
-    #[serde(with = "humantime_serde", default = "AmpConfig::default_poll_interval")]
+    #[serde(with = "humantime_serde")]
     pub poll_interval: Duration,
 
     pub manufacturer: Option<String>,
@@ -265,8 +185,6 @@ pub struct AmpConfig {
 }
 
 impl AmpConfig {
-    fn default_poll_interval() -> Duration {Duration::from_secs(1)}
-
     fn de_zones<'de, D>(deserializer: D) -> Result<HashMap<ZoneId, ZoneConfig>, D::Error>
     where
         D: Deserializer<'de>,
@@ -290,18 +208,46 @@ impl AmpConfig {
     }
 }
 
+impl Default for AmpConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval: Duration::from_secs(1),
+
+            manufacturer: None,
+            model: None,
+            serial: None,
+
+            sources: SourceId::all().into_iter().map(|id| {
+                (
+                    id,
+                    SourceConfig {
+                        name: format!("Source {id}"),
+                        enabled: true
+                    }
+                )
+            }).collect(),
+
+            zones: HashMap::new()
+        }
+    }
+}
+
 
 #[derive(Clone, Deserialize, Debug)]
 pub struct LoggingConfig {
+}
 
+#[derive(Clone, Deserialize, Debug)]
+pub enum PortConfig {
+    Serial(SerialConfig),
+    Tcp(TcpConfig)
 }
 
 #[derive(Clone, Deserialize, Debug)]
 pub struct Config {
     pub logging: LoggingConfig,
 
-    pub serial: Option<SerialConfig>,
-    pub tcp: Option<TcpConfig>,
+    pub port: PortConfig,
 
     pub mqtt: MqttConfig,
 
@@ -318,7 +264,7 @@ where
     T: Deserialize<'de> + FromStr<Err = Void>,
     D: Deserializer<'de>,
 {
-    struct StringOrStruct<T>(PhantomData<fn() -> T>);
+    struct StringOrStruct<T>(PhantomData<T>);
 
     impl<'de, T> Visitor<'de> for StringOrStruct<T>
     where
@@ -332,14 +278,14 @@ where
 
         fn visit_str<E>(self, value: &str) -> Result<T, E>
         where
-            E: de::Error,
+            E: de::Error
         {
             Ok(FromStr::from_str(value).unwrap())
         }
 
         fn visit_map<M>(self, map: M) -> Result<T, M::Error>
         where
-            M: MapAccess<'de>,
+            M: MapAccess<'de>
         {
             Deserialize::deserialize(de::value::MapAccessDeserializer::new(map))
         }
@@ -424,4 +370,16 @@ pub fn load_config(path: &PathBuf) -> Result<Config> {
     
 
     Ok(config)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config() {
+
+        
+    }
 }

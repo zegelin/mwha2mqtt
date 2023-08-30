@@ -359,20 +359,34 @@ mod serial {
             let zone_set_re = Regex::new(r"<(\d\d)(\w\w)(\d\d)").unwrap();
             let baud_set_re = Regex::new(r"<(\d+)").unwrap();
 
+            macro_rules! capture_group {
+                ( $captures:ident, $i:expr ) => {
+                    $captures.get($i).expect(concat!("capture group ", $i)).as_str()
+                }
+            }
+
+            fn zone_id(captures: &regex::Captures) -> Result<ZoneId> {
+                let zone = capture_group!(captures, 1)
+                    .parse().context("expected a valid zone id")?;
+
+                if let ZoneId::System = zone {
+                    bail!("system zone not supported")
+                }
+
+                Ok(zone)
+            }
 
             let cmd = if let Some(captures) = zone_enquiry_re.captures(&cmd) {
                 // zone enquiry
-                let zone = captures.get(1).expect("capture group 1").as_str()
-                    .parse().context("expected a valid zone id")?;
+                let zone = zone_id(&captures)?;
 
                 Command::ZoneEnquriry(zone)
 
             } else if let Some(captures) = zone_attr_enquiry_re.captures(&cmd) {
                 // zone attribute enquiry
-                let zone = captures.get(1).expect("capture group 1").as_str()
-                    .parse().context("expected a valid zone id")?;
+                let zone = zone_id(&captures)?;
 
-                let attr = captures.get(2).expect("capture group 2").as_str();
+                let attr = capture_group!(captures, 2);
 
                 let attr = match attr {
                     "PR" => ZoneAttributeDiscriminants::Power,
@@ -390,13 +404,11 @@ mod serial {
 
             } else if let Some(captures) = zone_set_re.captures(&cmd) {
                 // zone set
+                let zone = zone_id(&captures)?;
 
-                let zone = captures.get(1).expect("capture group 1").as_str()
-                    .parse().context("expected a valid zone id")?;
+                let attr = capture_group!(captures, 2);
 
-                let attr = captures.get(2).expect("capture group 2").as_str();
-
-                let value: u8 = captures.get(3).expect("capture group 3").as_str()
+                let value: u8 = capture_group!(captures, 3)
                     .parse().context("expected a valid value")?;
 
                 let attr = match attr {
@@ -431,12 +443,12 @@ mod serial {
                 Command::ZoneSet(zone, attr)
 
             } else if let Some(captures) = baud_set_re.captures(&cmd) {
-                let baud: u16 = captures.get(1).expect("capture group 1").as_str()
+                let baud: u16 = capture_group!(captures, 1)
                     .parse().context("expected a valid baud rate")?;
 
                 // todo
-                log::error!("baud rate change unimplemented.");
-                return Ok(None)
+                bail!("baud rate change unimplemented.");
+                //return Ok(None)
 
             } else {
                 bail!("unknown command: {}", cmd)
@@ -450,7 +462,11 @@ mod serial {
         loop {
             loop {
                 let mut ch = [0; 1];
-                stream.read(&mut ch)?;
+                let n = stream.read(&mut ch)?;
+
+                if n == 0 {
+                    return Ok(());
+                }
 
                 match ch[0] {
                     // printable ASCII
@@ -578,9 +594,13 @@ fn main() -> Result<()> {
 
             for stream in listener.incoming() {
                 let stream = stream.unwrap();
-                println!("Got connection {:?}", stream.peer_addr());
+                let addr = stream.peer_addr();
 
-                serial::run(amp.clone(), stream).unwrap();
+                log::info!("got connection from {:?}", addr);
+
+                if let Err(err) = serial::run(amp.clone(), stream) {
+                    log::error!("error handling request for {:?}: {}", addr, err);
+                }
             }
         }
     });
