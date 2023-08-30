@@ -2,22 +2,23 @@
 
 Monoprice/McLELLAND whole-home audio amplifier serial to MQTT bridge controller.
 
-This project communicates with various models of multi-zone whole-home audio amplifiers via RS232,
+The main component of this project is `mwha2mqttd`, a background daemon that communicates with various models of multi-zone whole-home audio amplifiers via RS232,
 enabling status enquiry and remote control of these amplifiers via MQTT.
 
-Zone status is polled periodically and when a zone attribute changes the value is reported on zone-specific MQTT topics.
-Values can be written to zone-specific MQTT topics to adjust zone attributes.
+`mwha2mqttd` periodically polls the amp and when zone attributes (e.g., volume) change the values are published to MQTT topics.
+In addition, clients can adjust zone attributes by publishing values to MQTT topics.
+`mwha2mqttd` subscribes to these topics and will communicate with the amp to adjust the zone(s).
 See [Topics](#topics) below for details.
 
-The project has been rewritten in Rust.
+The project has been rewritten in Rust!
 The Python version can be found on the `python` branch.
 
 ## Features
 
-- Publishes zone status/attributes to zone-specific MQTT topics.
+- Publishes zone status/attributes to zone-attribute-specific MQTT topics.
 - Subscribes to zone-specific MQTT topics for modification of zone attributes.
-- Communication to direct device (TTY or COM port, such as a USB<->RS232 adapter) or serial-over-TCP 
-- Automatic serial baud-rate detection and negotiation.
+- Communication via physical TTY or COM port (such as a USB<->RS232 adapter) or raw serial-over-TCP (RFC2217 not supported).
+- Automatic serial baud-rate detection and negotiation (for physical ports)
 
 ## Compatible Amplifiers
 
@@ -38,12 +39,21 @@ Pull requests to update this table would be appreciated once `mwha2mqtt` is conf
 
 ## Configuration
 
+`mwha2mqttd` has various settings that are set by a TOML configuration file.
+
+The default config file shows all the available settings and documentation is provided as comments. 
+
+The location and name of this config file varies depending on how _mwha2mqtt_ is installed.
+
+### Linux
+On most Linux-based systems, packaged versions of `mwha2mqttd` reads its configuration from `/etc/mwha2mqttd/mwha2mqttd.toml`.
+
 
 
 ## Topics
 
 The topic names below are shown with the prefix `mwha/`.
-This prefix can be changed in the configuration file.
+This prefix can be changed in the `mwha2mqttd` configuration file (see the `mqtt.url` option)
 
 In the topic names below `<a>` represents a placeholder for value `a` (the `<` and `>` characters are not present in the topic name).
 For example `source/<i>` where `i` = 1 results in a topic name `source/1`.
@@ -77,7 +87,7 @@ status query to the amp over RS232).
 
 The following topics are for clients to alter the attributes of configured zones.
 
-Publishing a message to an unconfigured zone is a no-op. Invalid values will be logged but otherwise are a no-op.
+Publishing a message to topic for an unconfigured zone is a no-op. Invalid values will be logged but otherwise are a no-op.
 
 | Topic | Data Type | Description |
 |-------|-----------|-------------|
