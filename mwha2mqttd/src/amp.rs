@@ -74,7 +74,8 @@ impl Amp {
         while !buffer.ends_with(marker) {
             let mut ch = [0; 1];
 
-            self.port.read(&mut ch)?;
+            self.port.read(&mut ch)
+                .context("failed to read from port")?;
             
             buffer.extend_from_slice(&ch);
         }
@@ -130,7 +131,7 @@ impl Amp {
         let cmd = format!("{}\r", marker);
         let reply = format!("{}\r\n#\r\nCommand Error.\r\n#", marker);
 
-        println!("cmd: '{}' reply: '{}'", escape(&cmd), escape(&reply));
+        println!("cmd: '{}', expected reply: '{}'", escape(&cmd), escape(&reply));
 
         self.port.write(cmd.as_bytes())?;
         self.read_until(reply.as_bytes())?;

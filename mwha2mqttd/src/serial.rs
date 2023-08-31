@@ -1,29 +1,15 @@
 use std::{io::{self, Read, Write}, time::Duration};
 
-use log::{debug, info};
+use log::{debug, info, error};
 use serialport::SerialPort;
 
 use delegate::delegate;
 
 use anyhow::{Context, Result, bail};
 
-use crate::amp::Port;
-
-pub const BAUD_RATES: &'static [u32] = &[9600, 19200, 38400, 57600, 115200, 230400];
+use crate::{amp::Port, config::{SerialPortConfig, BaudConfig, AdjustBaudConfig, BAUD_RATES}};
 
 
-#[derive(Clone, Copy, Debug)]
-pub enum BaudConfig {
-    Rate(u32),
-    Auto,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum AdjustBaudConfig {
-    Rate(u32),
-    Max,
-    Off
-}
 
 pub struct AmpSerialPort {
     port: Box<dyn SerialPort>,
@@ -34,35 +20,53 @@ pub struct AmpSerialPort {
 const BAUD_DETECT_TEST_DATA: &[u8] = b"baudrate detect\r";
 
 impl AmpSerialPort {
-    pub fn new(path: &str, baud_config: BaudConfig, adjust_baud: AdjustBaudConfig, reset_baud: bool, timeout: Duration) -> Result<Self> {
-        let default_baud = match baud_config {
+    pub fn new(config: &SerialPortConfig) -> Result<Self> {
+        let default_baud = match config.baud {
             BaudConfig::Rate(baud) => baud,
             BaudConfig::Auto => 9600,
         };
 
-        let mut port = serialport::new(path, default_baud)
-                .timeout(timeout)
-                .open().with_context(|| format!("failed to open serial port {}", path))?;
+        let mut port = serialport::new(&config.device, default_baud)
+            .timeout(Duration::from_secs(1))
+            //.timeout(config.c)
+            .open()
+            .with_context(|| format!("failed to open serial port: {}", config.device))?;
 
         // detect the baud rate
-        let detected_baud = match baud_config {
+        let detected_baud = match config.baud {
             BaudConfig::Rate(baud) => baud,
-            BaudConfig::Auto => AmpSerialPort::detect_baud(&mut port).context("failed to detect baud")?,
+            BaudConfig::Auto => AmpSerialPort::detect_baud(&mut port)
+                .context("failed to detect baud")?,
         };
 
         // adjust the baud rate
-        match adjust_baud {
-            AdjustBaudConfig::Rate(baud) => AmpSerialPort::set_baud(&mut port, baud)?,
-            AdjustBaudConfig::Max => AmpSerialPort::set_baud(&mut port, BAUD_RATES[BAUD_RATES.len()-1])?,
-            AdjustBaudConfig::Off => (),
-        }
-        
-        let p = AmpSerialPort {
-            port,
-            previous_baud: if reset_baud { Some(detected_baud) } else { None }, // todo: dont "reset" baud if no adjustment occured
-        };
+        let previous_baud = {
+            let new_baud = match config.adjust_baud {
+                AdjustBaudConfig::Rate(baud) => Some(baud),
+                AdjustBaudConfig::Max => Some(BAUD_RATES[BAUD_RATES.len()-1]),
+                AdjustBaudConfig::Off => None,
+            };
 
-        Ok(p)
+            if let Some(baud) = new_baud {
+                if baud != detected_baud {
+                    AmpSerialPort::adjust_baud(&mut port, baud)?;
+
+                    if config.reset_baud { Some(detected_baud) } else { None }
+
+                } else {
+                    // no point in changing baud to the same value
+                    None
+                }
+
+            } else {
+                None
+            }
+        };
+        
+        Ok(AmpSerialPort {
+            port,
+            previous_baud
+        })
     }
 
     /// Detect the current baud rate of the amp.
@@ -70,44 +74,46 @@ impl AmpSerialPort {
     /// Sets the baud rate of the serial port to each of the supported values and then
     /// writes a known string and compares the echo readback. If the echoed value is identical
     /// the baud rate is correct. 
-    ///
     fn detect_baud(port: &mut Box<dyn SerialPort>) -> Result<u32> {
         let mut response_buffer = [0; BAUD_DETECT_TEST_DATA.len()];
 
         for &rate in BAUD_RATES {
             port.clear(serialport::ClearBuffer::All)?;
 
-            debug!("Trying baud rate {}", rate);
+            info!("trying baud rate {}", rate);
             port.set_baud_rate(rate)?;
 
             port.write_all(BAUD_DETECT_TEST_DATA)?;
             match port.read_exact(&mut response_buffer) {
                 Ok(_) => {
                     if response_buffer == BAUD_DETECT_TEST_DATA {
-                        info!("Baud rate detected as {}", rate);
+                        info!("baud rate detected as {}", rate);
                         return Ok(rate)
                     }
                 },
-                Err(error) => match error.kind() {
+                Err(error) => {
+                    println!("{error}");
+                    match error.kind() {
                     io::ErrorKind::TimedOut => continue, // wrong baud possibly means less bytes read than expected and a timeout occurs
                     _ => return Err(error.into())
-                },
+                }
+            },
             }
         }
 
-        bail!("Unable to detect current baud rate.") // todo: custom error
+        bail!("unable to detect current baud rate")
     }
 
-    fn set_baud(port: &mut Box<dyn SerialPort>, baud_rate: u32) -> Result<(), io::Error> {
-        info!("Adjusting baud rate to {}", baud_rate);
+    fn adjust_baud(port: &mut Box<dyn SerialPort>, baud_rate: u32) -> Result<(), io::Error> {
+        info!("adjusting baud rate to {}", baud_rate);
 
         let cmd = format!("<{}\r", baud_rate);
         port.write_all(cmd.as_bytes())?;
 
         // As soon as the amp receives the '\r' of the command it switches baud.
-        // There's no way to sync switching local baud with the amp (to my knowledge), esp. over IP.
+        // To my knowledge there's no way to sync switching local baud with the amp..
         // Hence, even though baud set commands return "#Done." on success, the response is almost always corrupted.
-        // Instead, drain the input buffer. A resync after changing baud...
+        // Instead, drain the input buffer.
 
         port.set_baud_rate(baud_rate)?;
 
@@ -120,7 +126,10 @@ impl AmpSerialPort {
 impl Drop for AmpSerialPort {
     fn drop(&mut self) {
         if let Some(baud) = self.previous_baud {
-            AmpSerialPort::set_baud(&mut self.port, baud).unwrap(); // TODO: handle error better -- shouldn't panic, just log
+            info!("resetting baud rate");
+            if let Err(err) = AmpSerialPort::adjust_baud(&mut self.port, baud) {
+                error!("failed to reset baud rate: {err}");
+            }
         }
     }
 }

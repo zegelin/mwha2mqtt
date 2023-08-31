@@ -7,8 +7,6 @@ use void::Void;
 
 use anyhow::Result;
 
-use crate::serial::{BaudConfig, BAUD_RATES, AdjustBaudConfig};
-
 use common::{ids::SourceId, mqtt::MqttConfig, zone::ZoneId};
 
 
@@ -83,32 +81,48 @@ impl <'de>Deserialize<'de> for AdjustBaudConfig {
 #[derive(Clone, Deserialize, Debug)]
 pub struct CommonPortConfig {
     #[serde(with = "humantime_serde", default = "CommonPortConfig::default_read_timeout")]
-    pub read_timeout: Duration
+    pub read_timeout: Option<Duration>
 }
 
 impl CommonPortConfig {
-    fn default_read_timeout() -> Duration { Duration::from_secs(1) }
+    fn default_read_timeout() -> Option<Duration> { Some(Duration::from_secs(1)) }
+}
+
+
+pub const BAUD_RATES: &'static [u32] = &[9600, 19200, 38400, 57600, 115200, 230400];
+
+#[derive(Clone, Copy, Debug)]
+pub enum BaudConfig {
+    Rate(u32),
+    Auto,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum AdjustBaudConfig {
+    Rate(u32),
+    Max,
+    Off
 }
 
 
 #[derive(Clone, Deserialize, Debug)]
-pub struct SerialConfig {
+pub struct SerialPortConfig {
     #[serde[flatten]]
     pub common: CommonPortConfig,
 
     pub device: String,
 
-    #[serde(default = "SerialConfig::default_baud")]
+    #[serde(default = "SerialPortConfig::default_baud")]
     pub baud: BaudConfig,
 
-    #[serde(default = "SerialConfig::default_adjust_baud")]
+    #[serde(default = "SerialPortConfig::default_adjust_baud")]
     pub adjust_baud: AdjustBaudConfig,
 
-    #[serde(default = "SerialConfig::default_reset_baud")]
+    #[serde(default = "SerialPortConfig::default_reset_baud")]
     pub reset_baud: bool,
 }
 
-impl SerialConfig {
+impl SerialPortConfig {
     fn default_baud() -> BaudConfig { BaudConfig::Auto }
 
     fn default_adjust_baud() -> AdjustBaudConfig { AdjustBaudConfig::Off }
@@ -119,15 +133,15 @@ impl SerialConfig {
 
 
 #[derive(Clone, Deserialize, Debug)]
-pub struct TcpConfig {
+pub struct TcpPortConfig {
     #[serde[flatten]]
     pub common: CommonPortConfig,
 
-    pub address: String
+    pub url: url::Url
 }
 
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 pub struct SourceConfig {
     pub name: String,
 
@@ -151,7 +165,7 @@ impl FromStr for SourceConfig {
 }
 
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 pub struct ZoneConfig {
     pub name: String
 }
@@ -167,8 +181,7 @@ impl FromStr for ZoneConfig {
 }
 
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(default)]
+#[derive(Clone, Deserialize, Debug)]
 pub struct AmpConfig {
     #[serde(with = "humantime_serde")]
     pub poll_interval: Duration,
@@ -178,13 +191,14 @@ pub struct AmpConfig {
     pub serial: Option<String>,
 
     #[serde(deserialize_with = "AmpConfig::de_sources")]
-    pub sources: HashMap<SourceId, SourceConfig>,
+    sources: HashMap<SourceId, SourceConfig>,
 
     #[serde(deserialize_with = "AmpConfig::de_zones")]
     pub zones: HashMap<ZoneId, ZoneConfig>
 }
 
 impl AmpConfig {
+    /// Deserialize zone config map, permitting "string-or-struct" for each value.
     fn de_zones<'de, D>(deserializer: D) -> Result<HashMap<ZoneId, ZoneConfig>, D::Error>
     where
         D: Deserializer<'de>,
@@ -196,6 +210,7 @@ impl AmpConfig {
         v.into_iter().map(|(k, ValueWrapper(v))| Ok((k.parse().map_err(de::Error::custom)?, v))).collect::<>()
     }
 
+    /// Deserialize source config map, permitting "string-or-struct" for each value.
     fn de_sources<'de, D>(deserializer: D) -> Result<HashMap<SourceId, SourceConfig>, D::Error>
     where
         D: Deserializer<'de>,
@@ -206,29 +221,20 @@ impl AmpConfig {
         let v = HashMap::<String, ValueWrapper>::deserialize(deserializer)?;
         v.into_iter().map(|(k, ValueWrapper(v))| { Ok((k.parse().map_err(de::Error::custom)?, v)) }).collect()
     }
-}
 
-impl Default for AmpConfig {
-    fn default() -> Self {
-        Self {
-            poll_interval: Duration::from_secs(1),
+    pub fn sources(&self) -> HashMap<SourceId, SourceConfig> {
+        let mut sources = self.sources.clone();
 
-            manufacturer: None,
-            model: None,
-            serial: None,
+        for i in SourceId::all() {
+            if !sources.contains_key(&i) {
+                sources.insert(i, SourceConfig {
+                    name: format!("Source {i}"),
+                    enabled: SourceConfig::default_enabled()
+                });
+            }
+        };
 
-            sources: SourceId::all().into_iter().map(|id| {
-                (
-                    id,
-                    SourceConfig {
-                        name: format!("Source {id}"),
-                        enabled: true
-                    }
-                )
-            }).collect(),
-
-            zones: HashMap::new()
-        }
+        return sources;
     }
 }
 
@@ -238,15 +244,18 @@ pub struct LoggingConfig {
 }
 
 #[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "lowercase")]
 pub enum PortConfig {
-    Serial(SerialConfig),
-    Tcp(TcpConfig)
+    Serial(SerialPortConfig),
+    Tcp(TcpPortConfig)
 }
 
 #[derive(Clone, Deserialize, Debug)]
 pub struct Config {
     pub logging: LoggingConfig,
 
+    //#[serde(flatten)]
+    // disabled until https://github.com/SergioBenitez/Figment/issues/80 is resolved
     pub port: PortConfig,
 
     pub mqtt: MqttConfig,
@@ -255,9 +264,9 @@ pub struct Config {
 }
 
 
-/// Deserialize expecting either a String or Map.
+/// Deserialize, expecting either a String or Map.
 /// Strings will use the FromStr trait on T.
-/// Maps will use Deserialzie on T
+/// Maps will use Deserialzie on T.
 // from https://serde.rs/string-or-struct.html
 fn de_string_or_struct<'de, T, D>(deserializer: D) -> Result<T, D::Error>
 where
@@ -297,71 +306,18 @@ where
 
 
 
-
-
-
-// impl Default for Config {
-//     fn default() -> Self {
-//         Self { 
-//             serial: Default::default(),
-//             tcp: Default::default(),
-//             mqtt: Default::default(),
-//             amp: Default::default()
-//         }
-//     }
-// }
-
 pub fn load_config(path: &PathBuf) -> Result<Config> {
-    // let default_sources = (1..6).map(|i| {
-    //     (
-    //         SourceId::new(i),
-    //         SourceConfig {
-    //             name: format!("Source {}", i),
-    //             enabled: true
-    //         }
-    //     )
-    // }).collect::<HashMap<SourceId, SourceConfig>>();
-
-    // Ok(Config {
-    //     logging: LoggingConfig {  },
-    //     serial: Some(SerialConfig {
-    //         common: CommonPortConfig {
-    //             read_timeout: Duration::from_millis(1000)
-    //         },
-    //         device: "/dev/ttyUSB0s".to_string(),
-    //         baud: BaudConfig::Rate(9600),
-    //         adjust_baud: AdjustBaudConfig::Off,
-    //         reset_baud: false 
-    //     }),
-    //     tcp: None,
-    //     mqtt: MqttConfig {
-    //         url: "mqtt://localhost?client_id=mwha2mqtt".to_string()
-    //     },
-    //     amp: AmpConfig {
-    //         poll_interval: Duration::from_millis(1000),
-    //         manufacturer: None,
-    //         model: None,
-    //         serial: None,
-    //         sources: default_sources,
-    //         zones: vec![(ZoneId::zone(1, 1).unwrap(), ZoneConfig { name: "Zone 1".to_string() })].into_iter().collect(),
-    //     } })
-    // 
-
-    // todo!()
-
-    // todo: create default source IDs so there is always 6
-
     let f = Figment::from(Toml::file(path));
 
     let config: Config = match f.extract() {
         Ok(config) => config,
         Err(err) => {
             // todo: pass error to caller
-            for error in err {
-                eprintln!("{}", error);
-            }
+            // for error in err {
+            //     eprintln!("{}", error);
+            // }
 
-            panic!("Unable to load config.");
+            panic!("Unable to load config. {}", err);
         },
     };
 
@@ -370,16 +326,4 @@ pub fn load_config(path: &PathBuf) -> Result<Config> {
     
 
     Ok(config)
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_config() {
-
-        
-    }
 }

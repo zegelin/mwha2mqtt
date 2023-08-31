@@ -1,13 +1,23 @@
+# mwha2mqtt example config
+#
+# Defaults are shown commented out.
+#
+# Settings of type Duration:
+# Durations are defined as a TOML string with format: "<value><suffix>".
+# Whitespace may be included between "value" and "suffix".
+# Various suffixes are supported, including "s"/"sec"/"second" and "ms"/"msec" (for milliseconds).
+# (a full list of supported suffixes is here: https://docs.rs/humantime/latest/humantime/fn.parse_duration.html)
+
 [logging]
 
-[serials]
+[port.serial]
 # The serial port device file path (i.e., /dev/ttyUSB0).
-device = "/dev/ttyUSB0"
+device = "/dev/ttyUSB1"
 
 # The serial port baud rate.
 # One of 9600, 19200, 38400, 57600, 115200, 230400 or "auto" can be specified.
 # "auto" will detect the current baud rate. 
-# Values other that 9600 (amp power-on default) or "auto" require the amp to already be configured to use the specified baud before mwha2mqttd starts
+# Values other that 9600 (amp power-on default) or "auto" require the amp to already be configured to use the specified baud before mwha2mqttd starts.
 # You probably want "auto".
 #baud = "auto"
 
@@ -20,14 +30,15 @@ device = "/dev/ttyUSB0"
 # Whether to reset the device and port baud rate to the original (detected) rate on exit.
 #reset_baud = true
 
-# Serial read timeout in seconds.
-# Fractional values are supported.
-#read_timeout = 1.0
+# Serial read timeout
+#read_timeout = 1 sec
 
-[tcp]
-#url = "raw://localhost:9955"
-address = "localhost:9955"
+[port.tcps]
+url = "raw://localhost:88"
+# address = "localhost:9955"
 
+# network read timeout
+read_timeout = 1
 
 
 
@@ -58,11 +69,12 @@ address = "localhost:9955"
 #url = "mqtt://localhost"  # mqtt broker on localhost, default mqtt port, default topic prefix.
 #url = "mqtt://localhost/my_mwha/"  # mqtt broker on localhost, default mqtt port, topic prefix of 'my_mwha/'.
 #url = "mqtt://example.com/mwha/"  # when combined with srv_lookup, will look for a _mqtt._tcp.example.com SRV record.
-url = "mqtt://foo:bar@localhost"
+url = "mqtt://localhost"
 
 # Whether to perform a DNS query for a SRV record containing the details of an MQTT server on a domain.
 # When true the host in the MQTT URL is interpreted as a domain, and a DNS query is made against that domain for a SRV record of type
 # _mqtt._tcp ('mqtt' scheme) or _secure-mqtt._tcp ('mqtts' scheme).
+# TODO: support for this is currently not implemented
 srv_lookup = false
 
 
@@ -94,7 +106,7 @@ ca_certs = "foo.pem"
 poll_interval = "100 ms"
 
 # Amplifier metatdata.
-# This data is arbitrary, but can be customized so that clients (such as mwhactl, mwhamixer and mwha-homebridge)
+# This data is optional and arbitrary, but can be customized so that clients (such as mwhactl, mwhamixer and mwha-homekit)
 # display the right values.
 #manufacturer = "Monoprice"
 #model = "MPR-6ZHMAUT"
@@ -116,8 +128,8 @@ poll_interval = "100 ms"
 # Sources default to a name of "Source 𝘯" (where 𝘯 is the source number), if left unspecified.
 # Sources default to enabled.
 
-# "1" = "Public Announcement"
-# 2 = "Living Room TV ARC"
+1 = "Public Announcement"
+2 = "Living Room TV ARC"
 # 3 = "Master Bedroom TV ARC"
 # 4 = { name = "AirPlay", enabled = false }
 # 5 = "Main PC HDMI"

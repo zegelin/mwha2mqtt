@@ -85,16 +85,34 @@ fn connect_mqtt(config: &MqttConfig) -> Result<(Client, MqttConnectionManager, S
 fn connect_amp(config: &Config) -> Result<Amp> {
     let port: Box<dyn Port> = match &config.port {
         config::PortConfig::Serial(serial) => {
-            let serial = AmpSerialPort::new(&serial.device, serial.baud, serial.adjust_baud, serial.reset_baud, serial.common.read_timeout)
-                .context("failed to open serial port")?;
+            let serial = AmpSerialPort::new(serial)
+                .with_context(|| format!("failed to establish serial port connection: {}", serial.device))?;
 
             Box::new(serial)
         },
         config::PortConfig::Tcp(tcp) => {
-            let stream = TcpStream::connect(&tcp.address)?;
-            stream.set_read_timeout(Some(tcp.common.read_timeout))?;
-    
-            Box::new(stream)
+            let url = &tcp.url;
+            match url.scheme() {
+                "raw" => {
+                    let host = url.host_str()
+                        .with_context(|| format!("tcp raw requires a host to be specified in the url: {url}"))?;
+
+                    let port = url.port()
+                        .with_context(|| format!("tcp raw requires a port number to be specified in the url: {url}"))?;
+
+                    let stream = TcpStream::connect((host, port))
+                        .with_context(|| format!("failed to open tcp raw connection to {}:{}", host, port))?;
+
+                    stream.set_read_timeout(tcp.common.read_timeout)
+                        .with_context(|| format!("failed to set tcp read timeout to {:?}", tcp.common.read_timeout))?;
+
+                    Box::new(stream)
+                },
+
+                other => {
+                    bail!("tcp port scheme \"{other}\" not supported: {url}")
+                }
+            }
         },
     };
 
@@ -193,18 +211,18 @@ fn publish_metadata(mqtt: &mut Client, config: &Config, topic_base: &str) -> Res
     mqtt.publish(format!("{}connected", topic_base), rumqttc::QoS::AtLeastOnce, true, "2")?;
 
     // amp metadata
-    if let Some(&model) = config.amp.model {
+    if let Some(model) = &config.amp.model {
         mqtt.publish_json(format!("{}status/amp/model", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(model))?;
     }
-    if let Some(manufacturer) = config.amp.manufacturer {
+    if let Some(manufacturer) = &config.amp.manufacturer {
         mqtt.publish_json(format!("{}status/amp/manufacturer", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(manufacturer))?;
     }
-    if let Some(serial) = config.amp.serial {
+    if let Some(serial) = &config.amp.serial {
         mqtt.publish_json(format!("{}status/amp/serial", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(serial))?;
     }
 
     // source metadata
-    for (source_id, source_config) in &config.amp.sources {
+    for (source_id, source_config) in config.amp.sources() {
         let topic_base = format!("{}status/source/{}/", topic_base, source_id);
 
         mqtt.publish_json(format!("{}name", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(source_config.name))?;
@@ -342,7 +360,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     publish_metadata(&mut mqtt_client, &config, &topic_base)?;
 
-
+    log::info!("running");
 
     let mut signals = Signals::new(TERM_SIGNALS)?;
     signals.forever().next(); // wait for a signal

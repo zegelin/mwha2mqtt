@@ -1,5 +1,4 @@
 # mwha2mqtt
-
 Monoprice/McLELLAND whole-home audio amplifier serial to MQTT bridge controller.
 
 The main component of this project is `mwha2mqttd`, a background daemon that communicates with various models of multi-zone whole-home audio amplifiers via RS232,
@@ -14,14 +13,12 @@ The project has been rewritten in Rust!
 The Python version can be found on the `python` branch.
 
 ## Features
-
 - Publishes zone status/attributes to zone-attribute-specific MQTT topics.
 - Subscribes to zone-specific MQTT topics for modification of zone attributes.
 - Communication via physical TTY or COM port (such as a USB<->RS232 adapter) or raw serial-over-TCP (RFC2217 not supported).
 - Automatic serial baud-rate detection and negotiation (for physical ports)
 
 ## Compatible Amplifiers
-
 | Manufacturer    | Model                | Compatibility | Notes                                                                                                                                                                                                            |
 |-----------------|----------------------|---------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Monoprice       | MPR-6ZHMAUT (10761)  | Compatible    | Equivalent to MAP-1200HD.<br><br>[Product Page](https://www.monoprice.com/product?p_id=10761), [Manual](https://downloads.monoprice.com/files/manuals/10761_Manual_131209.pdf)                                                                   |
@@ -38,7 +35,6 @@ These amps list RS232 control codes in their instruction manuals that match the 
 Pull requests to update this table would be appreciated once `mwha2mqtt` is confirmed working with these amps.
 
 ## Configuration
-
 `mwha2mqttd` has various settings that are set by a TOML configuration file.
 
 The default config file shows all the available settings and documentation is provided as comments. 
@@ -51,7 +47,6 @@ On most Linux-based systems, packaged versions of `mwha2mqttd` reads its configu
 
 
 ## Topics
-
 The topic names below are shown with the prefix `mwha/`.
 This prefix can be changed in the `mwha2mqttd` configuration file (see the `mqtt.url` option)
 
@@ -63,7 +58,6 @@ The JSON data type of the message clients should expect to send/receive on a par
 `Integer` is a JSON `Number` that only has an integer component.
 
 ### Subscribe-only Topics
-
 The following topics are for clients to receive metadata and updates about the configured amps, zones and sources.
 
 Publishing messages to these topics is handled by `mwha2mqttd`.
@@ -84,7 +78,6 @@ status query to the amp over RS232).
 | `mwha/status/zone/<zone-id>/<attribute>`| _Various_ | Zone status and metadata.<br><br>See [Zone Attribute Topics](#zone-attribute-topics)below for details. 
 
 ### Publish-only Topics
-
 The following topics are for clients to alter the attributes of configured zones.
 
 Publishing a message to topic for an unconfigured zone is a no-op. Invalid values will be logged but otherwise are a no-op.
@@ -95,7 +88,6 @@ Publishing a message to topic for an unconfigured zone is a no-op. Invalid value
 
 
 ### Source Attribute Topics
-
 Source metadata and attribute updates are published by `mwha2mqttd` to the `mwha/status/source/<source-id>/<attribute>` topics.
 
 `source-id` in the topic is the source ID. Valid source IDs are `1` through `6` (inclusive).
@@ -109,7 +101,6 @@ Source metadata and attribute updates are published by `mwha2mqttd` to the `mwha
 
 
 ### Zone Attribute Topics
-
 Zone metadata and attribute updates are published by `mwha2mqttd` to the `mwha/status/zone/<zone-id>/<attribute>` topics.
 
 Clients can adjust certain zone attributes by publishing messages to the `mwha/set/zone/<zone-id>/<attribute>` topics.
