@@ -345,7 +345,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     SimpleLogger::init(LevelFilter::Info, simplelog::Config::default()).unwrap();
 
-    let config = config::load_config(&args.config_file)?;
+    let config = config::load_config(&args.config_file).with_context(|| format!("failed to load config file: {}", args.config_file.to_string_lossy()))?;
 
     let (mut mqtt_client, mut mqtt_cm, topic_base) = connect_mqtt(&config.mqtt).context("failed to establish MQTT connection")?;
 

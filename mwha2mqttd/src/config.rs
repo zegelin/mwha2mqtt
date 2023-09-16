@@ -254,8 +254,6 @@ pub enum PortConfig {
 pub struct Config {
     pub logging: LoggingConfig,
 
-    //#[serde(flatten)]
-    // disabled until https://github.com/SergioBenitez/Figment/issues/80 is resolved
     pub port: PortConfig,
 
     pub mqtt: MqttConfig,
@@ -309,21 +307,5 @@ where
 pub fn load_config(path: &PathBuf) -> Result<Config> {
     let f = Figment::from(Toml::file(path));
 
-    let config: Config = match f.extract() {
-        Ok(config) => config,
-        Err(err) => {
-            // todo: pass error to caller
-            // for error in err {
-            //     eprintln!("{}", error);
-            // }
-
-            panic!("Unable to load config. {}", err);
-        },
-    };
-
-    //println!("config: {:?}", config);
-
-    
-
-    Ok(config)
+    Ok(f.extract()?)
 }
