@@ -114,12 +114,16 @@ Zone metadata and attribute updates are published by `mwha2mqttd` to the `mwha/s
 
 Clients can adjust certain zone attributes by publishing messages to the `mwha/set/zone/<zone-id>/<attribute>` topics.
 
+For the meaning of `<zone-id>` and `<attribute>`, see [Zone IDs](#zone-ids) and [Zone Attributes](#zone-attributes).
+
 **Note**: Zones must be first configured in the config file before `mwha2mqttd` will publish status and handle adjustments for them.
 Sending adjustments to an unconfigured zone is a no-op.
 The `mwha/status/zones` topic will contain a list of configured zone IDs.
 It is recommended that clients subscribe to this topic to discover the list of configured zones.
 
-`zone-id` in the topic is a 2-digit zone identifier in the format _AZ_.<br>
+#### Zone IDs
+
+`<zone-id>` in the topic is a 2-digit zone identifier in the format _AZ_.<br>
 The first digit _A_ is the amplifier number, and valid values are `1` through `3` (inclusive), or `0` (see below).<br>
 The second digit _Z_ is the zone number on amplifier _A_, and valid values are `1` through `6` (inclusive), or `0` (see below).
 
@@ -144,10 +148,14 @@ No attribute status execpt `name` will be reported for these zones. However, adj
 | `30` | Virtual | `name` only | Amp `3` zone, adjusts all zones on amp 3. |
 
 
-`attribute` in the topic is a zone attribute name from the table below.
+#### Zone Attributes
+
+`<attribute>` in the topic is a zone attribute name from the table below.
 
 In the table below, attributes marked as _RO_ cannot be adjusted.
-Updates will be published on the `status/` topic. However, trying to adjust them via the `set/` topic is a no-op.
+Updates for these attributes will be published on the `status/` topic. However, trying to adjust them via the `set/` topic is a no-op.
+
+Attributed marked _R/W_ can be adjusted via the `set/` topic.
 
 | Attribute | Data Type | | Details |
 |-----------|-----------|-|---------|
