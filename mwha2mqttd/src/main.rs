@@ -49,7 +49,7 @@ use common::mqtt::PublishJson;
 
 const DEFAULT_CONFIG_FILE_PATH: &str = match option_env!("DEFAULT_CONFIG_FILE_PATH") {
     Some(v) => v,
-    None => "config.toml"
+    None => "mwha2mqttd.toml"
 };
 
 
@@ -63,7 +63,7 @@ struct Args {
 fn connect_mqtt(config: &MqttConfig) -> Result<(Client, MqttConnectionManager, String)> {
     let mut options = common::mqtt::options_from_config(config, "mwha2mqttd")?;
 
-    let topic_base = config.topic_base("mwha/");
+    let topic_base = config.topic_base().unwrap_or("mwha/".to_string());
 
     options.set_last_will(LastWill::new(format!("{}connected", topic_base), "0", rumqttc::QoS::AtLeastOnce, true));
 
@@ -133,26 +133,6 @@ fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, Zo
             if attr.read_only() { continue };
 
             let topic = attr.mqtt_set_topic(topic_base, &zone_id);
-
-            // {
-            //     use ZoneAttributeDiscriminants::*;
-
-            //     match attr {
-            //         PublicAnnouncement => {
-            //             mqtt.subscribe_json(topic, qos, handler)
-            //         },
-            //         Power => todo!(),
-            //         Mute => todo!(),
-            //         DoNotDisturb => todo!(),
-            //         Volume => todo!(),
-            //         Treble => todo!(),
-            //         Bass => todo!(),
-            //         Balance => todo!(),
-            //         Source => todo!(),
-            //         KeypadConnected => todo!(),
-            //     }
-            // }
-
 
             // todo: maybe invert this so the enum match is on the outside?
             let handler = {
@@ -279,7 +259,7 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
                 // newer attribute adjustments queued for the same zone overwrite earlier ones.
                 loop {
                     match msg {
-                        Some(ChannelMessage::ZoneStatusChanged(id, attr)) => { adjustments.insert((id, std::mem::discriminant(&attr)), (id, attr)); }
+                        Some(ChannelMessage::ZoneStatusChanged(zone_id, attr)) => { adjustments.insert((zone_id, std::mem::discriminant(&attr)), (zone_id, attr)); }
                         Some(ChannelMessage::Poison) => { return },
                         None => break
                     }
@@ -293,9 +273,9 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
             }
 
             // apply zone attribute adjustments, if any
-            for (id, attr) in adjustments.values().into_iter() {
-                log::debug!("adjust {} = {:?}", id, attr);
-                amp.set_zone_attribute(*id, *attr).unwrap(); // TODO: handle error more gracefully
+            for (zone_id, attr) in adjustments.values().into_iter() {
+                log::debug!("adjust {} = {:?}", zone_id, attr);
+                amp.set_zone_attribute(*zone_id, *attr).unwrap(); // TODO: handle error more gracefully
             }
 
             // get zone statuses for active amps
@@ -306,19 +286,19 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
     
             for zone_status in zone_statuses {
                 // don't publish status updates for disabled zones
-                if !zone_ids.contains(&zone_status.id) {
+                if !zone_ids.contains(&zone_status.zone_id) {
                     continue;
                 }
 
-                let previous_status = previous_statuses.get(&zone_status.id);
+                let previous_status = previous_statuses.get(&zone_status.zone_id);
 
                 for attr in &zone_status.attributes {
                     // don't publish if zone attribute hasn't changed
-                    if previous_status.map_or(false, |ps| ps.attributes.iter().any(|pa| *pa == *attr)) {
+                    if previous_status.map_or(false, |prev_status| prev_status.attributes.iter().any(|prev_attr| *prev_attr == *attr)) {
                         continue;
                     }
 
-                    let topic = ZoneAttributeDiscriminants::from(attr).mqtt_status_topic(&topic_base, &zone_status.id);
+                    let topic = ZoneAttributeDiscriminants::from(attr).mqtt_status_topic(&topic_base, &zone_status.zone_id);
 
                     let value = {
                         use ZoneAttribute::*;
@@ -334,7 +314,7 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
                     mqtt.publish_json(topic, rumqttc::QoS::AtLeastOnce, true, value).unwrap(); // TODO: handle error more gracefully
                 }
 
-                previous_statuses.insert(zone_status.id, zone_status);
+                previous_statuses.insert(zone_status.zone_id, zone_status);
             }
         }
     })

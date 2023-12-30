@@ -5,7 +5,7 @@ use serde::{Deserialize, Deserializer, de::{Visitor, self, MapAccess}, Serialize
 
 use void::Void;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use common::{ids::SourceId, mqtt::MqttConfig, zone::ZoneId};
 
@@ -225,6 +225,7 @@ impl AmpConfig {
     pub fn sources(&self) -> HashMap<SourceId, SourceConfig> {
         let mut sources = self.sources.clone();
 
+        // add default sources
         for i in SourceId::all() {
             if !sources.contains_key(&i) {
                 sources.insert(i, SourceConfig {
@@ -305,6 +306,9 @@ where
 
 
 pub fn load_config(path: &PathBuf) -> Result<Config> {
+    if (!path.exists()) {
+        bail!("{}: file not found", path.to_string_lossy())
+    }
     let f = Figment::from(Toml::file(path));
 
     Ok(f.extract()?)

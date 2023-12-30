@@ -33,12 +33,12 @@ device = "/dev/ttyUSB1"
 # Serial read timeout
 #read_timeout = 1 sec
 
-[port.tcps]
-url = "raw://localhost:88"
-# address = "localhost:9955"
+
+#[port.tcp]
+#url = "raw://localhost:88"
 
 # network read timeout
-read_timeout = 1
+#read_timeout = 1
 
 
 
@@ -54,19 +54,20 @@ read_timeout = 1
 # 
 # A username/password can be specified if required by the server.
 #
-# The URL path, if present, is used as a prefix to all topic names.
-# The leading / is always removed (MQTT topics don't typically begin with /).
-# If a trailing / isn't present, one will be added automatically.
+# The URL path, if present, is used as a prefix to all topic name, with the folowing caveats:
+# - Trailing slashes aren't added automatically.
+#     Typically the prefix should end with a '/' to act as a namespace so that single-level wildcard subscriptions ('+") work as expected.
+# - The first leading '/' is always removed (MQTT topics don't typically begin with '/').
+#     Start the path with '//' to have the perfix start with '/' (e.g. '//mwah/' means a prefix of '/mwha/').
 # If no path is specified (i.e. no '/' is present after the host/port) the default prefix of 'mwha/' will be used.
 # Use '/' to mean no prefix (which is probably not what you want).
-# Start the path with '//' if you want all topic names to start with a slash (e.g. '//mwah/' means a prefix of '/mwha/').
 # 
 # Various query parameters may be specified to alter the MQTT connection settings:
 # - 'client_id': string, set a custom client id (default "mwha2mqttd")
 # - 'keep_alive_secs': int, number of seconds after which client should ping the broker if there is no other data exchange
 # (see the rumqttc MqttOptions documentation for more)
 
-#url = "mqtt://localhost"  # mqtt broker on localhost, default mqtt port, default topic prefix.
+#url = "mqtt://localhost"  # mqtt broker on localhost, default mqtt port, default topic prefix of 'mwha/'.
 #url = "mqtt://localhost/my_mwha/"  # mqtt broker on localhost, default mqtt port, topic prefix of 'my_mwha/'.
 #url = "mqtt://example.com/mwha/"  # when combined with srv_lookup, will look for a _mqtt._tcp.example.com SRV record.
 url = "mqtt://localhost"
@@ -117,7 +118,7 @@ poll_interval = "100 ms"
 # Source config.
 # A table of source ids to their names and settings.
 # Valid source ids are 1 through 6 (inclusive).
-# Either a (inline) table or string may be the value for each entry.
+# The value for each entry may either be a (inline) table or string.
 # If a string is specified that string is used as the source name.
 # Each source has the following attributes:
 # - 'name': string, the source name
@@ -141,7 +142,7 @@ poll_interval = "100 ms"
 # A table of zone ids to their names.
 # Zones not listed will not report status or accept adjustments via MQTT.
 #
-# A zone id is a 2-digit zone identifier in the format "AZ".
+# A zone id is a numerical 2-digit zone identifier in the format "AZ".
 # The first digit "A" is the amplifier number, and valid values are 1 through 3 (inclusive), or 0 (see below).
 # The second digit "Z" is the zone number on amplifier "A", and valid values are 1 through 6 (inclusive), or 0 (see below).
 #
@@ -150,10 +151,12 @@ poll_interval = "100 ms"
 # Zone IDs refer to physical zones unless their ID contains a 0 which instead refers to a virtual zone.
 #
 # ID 00 is a virtual zone representing all zones (aka "the system").
-# No attribute status will be reported for this zone. However, adjustments sent to this zone will adjust all zones on every amp simultaniously.
+# No status will be reported for this zone. However, adjustments sent to this zone will adjust all zones on all amps inclduing
+# amps and zones not listed in this config.
 #
 # IDs 10, 20, and 30 are virtual zones representing all zones on amp 1, 2 and 3 (respectively).
-# No status will be reported for these zones. However, adjustments sent to these zones will adjust all zones on amp A simultaniously.
+# No status will be reported for these zones. However, adjustments sent to these zones will adjust all zones on the respecive amp (amp id A)
+# including zones on the amp not listed in this config.
 #
 # Valid zone ids are:
 # 11 through 16: Physical zones on amp 1 ["Master"].

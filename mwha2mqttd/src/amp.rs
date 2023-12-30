@@ -14,7 +14,6 @@ use anyhow::{Context, Result};
 
 use common::zone::ZoneId;
 use common::zone::ZoneAttribute;
-use common::zone::ZoneAttributeDiscriminants;
 
 
 
@@ -24,7 +23,7 @@ impl Port for TcpStream {}
 
 
 pub struct ZoneStatus {
-    pub id: ZoneId,
+    pub zone_id: ZoneId,
     pub attributes: Vec<ZoneAttribute>
 }
 
@@ -171,7 +170,7 @@ impl Amp {
                 use ZoneAttribute::*;
 
                 Ok(ZoneStatus {
-                    id: ZoneId::try_from(values[0]).context("invalid zone id received from amp")?,
+                    zone_id: ZoneId::try_from(values[0]).context("invalid zone id received from amp")?,
                     attributes: vec![
                         PublicAnnouncement(values[1] != 0),
                         Power(values[2] != 0),

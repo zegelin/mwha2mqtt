@@ -215,18 +215,11 @@ pub struct MqttConfig {
 impl MqttConfig {
     fn default_srv_lookup() -> bool { false }
 
-    pub fn topic_base(&self, default: &str) -> String {
+    pub fn topic_base(&self) -> Option<String> {
         match self.url.path() {
-            "" => default.to_string(),
-            "/" => "".to_string(),
+            "" => None,
             other => {
-                let base = other.strip_prefix("/").unwrap_or(other);
-    
-                if base.ends_with("/") {
-                    base.to_string()
-                } else {
-                    format!("{}/", base)
-                }
+                Some(other.strip_prefix("/").unwrap_or(other).to_string())
             }
         }
     }
@@ -420,10 +413,10 @@ mod tests {
             }
         }
 
-        assert_eq!(config_with_url("mqtt://localhost").topic_base("default/"), "default/");
-        assert_eq!(config_with_url("mqtt://localhost/").topic_base("default/"), "");
-        assert_eq!(config_with_url("mqtt://localhost/base").topic_base("default/"), "base/");
-        assert_eq!(config_with_url("mqtt://localhost/base/").topic_base("default/"), "base/");
-        assert_eq!(config_with_url("mqtt://localhost//base/").topic_base("default/"), "/base/");
+        assert_eq!(config_with_url("mqtt://localhost").topic_base(), None);
+        assert_eq!(config_with_url("mqtt://localhost/").topic_base(), Some("".to_string()));
+        assert_eq!(config_with_url("mqtt://localhost/base").topic_base(), Some("base".to_string()));
+        assert_eq!(config_with_url("mqtt://localhost/base/").topic_base(), Some("base/".to_string()));
+        assert_eq!(config_with_url("mqtt://localhost//base/").topic_base(), Some("/base/".to_string()));
     }
 }
