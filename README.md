@@ -4,19 +4,28 @@ Monoprice/McLELLAND whole-home audio amplifier serial to MQTT bridge controller.
 The main component of this project is `mwha2mqttd`, a background daemon that communicates with various models of multi-zone whole-home audio amplifiers via RS232,
 enabling status enquiry and remote control of these amplifiers via MQTT.
 
-`mwha2mqttd` periodically polls the amp and when zone attributes (e.g., volume) change the values are published to MQTT topics.
-In addition, clients can adjust zone attributes by publishing values to MQTT topics.
+`mwha2mqttd` periodically polls the connected amp(s) for zone status.
+When zone attributes (e.g., volume) change the new values are published to MQTT topics.
+Clients can adjust zone attributes by publishing values to MQTT topics.
 `mwha2mqttd` subscribes to these topics and will communicate with the amp to adjust the zone(s).
 See [Topics](#topics) below for details.
 
 The project has been rewritten in Rust!
-The Python version can be found on the `python` branch.
+The old Python version can be found on the `python` branch.
 
 ## Features
 - Publishes zone status/attributes to zone-attribute-specific MQTT topics.
 - Subscribes to zone-specific MQTT topics for modification of zone attributes.
 - Communication via physical TTY or COM port (such as a USB<->RS232 adapter) or raw serial-over-TCP (RFC2217 not supported).
-- Automatic serial baud-rate detection and negotiation (for physical ports)
+
+## Features yet to be implemented
+- A basic cli client tool (`mwha-cli`).
+- A more feature-full GUI mixer client.
+- Automatic HomeKit and HomeAssistant integration.
+- Automatic serial baud-rate detection and negotiation (for physical ports) (code is there, but doesn't work).
+- MQTT SRV support.
+- Example systemd service files.
+- Packaging/install scripts for various distros.
 
 ## Compatible Amplifiers
 | Manufacturer    | Model                | Compatibility | Notes                                                                                                                                                                                                            |
