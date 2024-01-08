@@ -7,7 +7,7 @@ use void::Void;
 
 use anyhow::{Result, bail};
 
-use common::{ids::SourceId, mqtt::MqttConfig, zone::ZoneId};
+use common::{ids::SourceId, mqtt::MqttConfig, zone::{ZoneId, ranges}};
 
 
 impl <'de>Deserialize<'de> for BaudConfig {
@@ -146,11 +146,23 @@ pub struct SourceConfig {
     pub name: String,
 
     #[serde(default = "SourceConfig::default_enabled")]
-    pub enabled: bool
+    pub enabled: bool,
+
+    pub shairport_topic_prefix: Option<String>
 }
 
 impl SourceConfig {
     fn default_enabled() -> bool { true }
+}
+
+impl Default for SourceConfig {
+    fn default() -> Self {
+        Self {
+            name: Default::default(),
+            enabled: Self::default_enabled(),
+            shairport_topic_prefix: None
+        }
+    }
 }
 
 impl FromStr for SourceConfig {
@@ -159,15 +171,41 @@ impl FromStr for SourceConfig {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(SourceConfig {
             name: s.to_string(),
-            enabled: SourceConfig::default_enabled()
+            ..Default::default()
         })
+    }
+}
+
+#[derive(Clone, Deserialize, Debug)]
+pub struct ZoneShairportConfig {
+    #[serde(default = "ZoneShairportConfig::default_max_volume")]
+    pub max_volume: u8,
+
+    #[serde(default = "ZoneShairportConfig::default_volume_offset")]
+    pub volume_offset: i8
+}
+
+impl ZoneShairportConfig {
+    fn default_max_volume() -> u8 { *ranges::VOLUME.end() }
+
+    fn default_volume_offset() -> i8 { 0 }
+}
+
+impl Default for ZoneShairportConfig {
+    fn default() -> Self {
+        Self {
+            max_volume: Self::default_max_volume(),
+            volume_offset: Self::default_volume_offset()
+        }
     }
 }
 
 
 #[derive(Clone, Deserialize, Debug)]
 pub struct ZoneConfig {
-    pub name: String
+    pub name: String,
+
+    pub shairport: ZoneShairportConfig
 }
 
 impl FromStr for ZoneConfig {
@@ -175,7 +213,8 @@ impl FromStr for ZoneConfig {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(ZoneConfig {
-            name: s.to_string()
+            name: s.to_string(),
+            shairport: Default::default()
         })
     }
 }
@@ -230,7 +269,7 @@ impl AmpConfig {
             if !sources.contains_key(&i) {
                 sources.insert(i, SourceConfig {
                     name: format!("Source {i}"),
-                    enabled: SourceConfig::default_enabled()
+                    ..Default::default()
                 });
             }
         };
@@ -251,6 +290,13 @@ pub enum PortConfig {
     Tcp(TcpPortConfig)
 }
 
+
+// #[derive(Clone, Deserialize, Debug)]
+// pub struct ShairportConfig {
+//     pub max_zone_volume: u8,
+// }
+
+
 #[derive(Clone, Deserialize, Debug)]
 pub struct Config {
     pub logging: LoggingConfig,
@@ -260,6 +306,8 @@ pub struct Config {
     pub mqtt: MqttConfig,
 
     pub amp: AmpConfig,
+
+   // pub shairport: ShairportConfig,
 }
 
 
@@ -306,7 +354,7 @@ where
 
 
 pub fn load_config(path: &PathBuf) -> Result<Config> {
-    if (!path.exists()) {
+    if !path.exists() {
         bail!("{}: file not found", path.to_string_lossy())
     }
     let f = Figment::from(Toml::file(path));

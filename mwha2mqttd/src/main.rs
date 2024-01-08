@@ -1,11 +1,14 @@
 mod config;
 mod amp;
 mod serial;
+mod shairport;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::TcpStream;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
@@ -14,9 +17,11 @@ use std::thread::JoinHandle;
 
 use amp::Amp;
 use amp::Port;
+use amp::ZoneStatus;
 use anyhow::bail;
 use common::mqtt::MqttConfig;
 use common::mqtt::MqttConnectionManager;
+use common::mqtt::PayloadDecodeError;
 use common::zone::ZoneAttribute;
 use common::zone::ZoneAttributeDiscriminants;
 
@@ -24,6 +29,7 @@ use clap::Parser;
 use clap::command;
 
 use common::zone::ZoneId;
+use common::zone::ZoneTopic;
 use config::AmpConfig;
 use config::Config;
 use config::ZoneConfig;
@@ -46,10 +52,16 @@ use anyhow::{Context, Result};
 
 use common::mqtt::PublishJson;
 
+use crate::shairport::install_source_shairport_handlers;
+
 
 const DEFAULT_CONFIG_FILE_PATH: &str = match option_env!("DEFAULT_CONFIG_FILE_PATH") {
     Some(v) => v,
-    None => "mwha2mqttd.toml"
+    None => if cfg!(debug_assertions) {
+        "mwha2mqttd.toml"
+    } else {
+        "/etc/mwha2mqttd.conf"
+    }
 };
 
 
@@ -119,8 +131,8 @@ fn connect_amp(config: &Config) -> Result<Amp> {
     Ok(Amp::new(port)?)
 }
 
-enum ChannelMessage {
-    ZoneStatusChanged(ZoneId, ZoneAttribute),
+pub enum ChannelMessage {
+    ChangeZoneAttribute(ZoneId, ZoneAttribute),
     Poison
 }
 
@@ -132,7 +144,28 @@ fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, Zo
             // don't subscribe/install handlers for read-only attributes
             if attr.read_only() { continue };
 
-            let topic = attr.mqtt_set_topic(topic_base, &zone_id);
+            let topic = attr.mqtt_topic_name(ZoneTopic::Set, topic_base, &zone_id);
+
+            // {
+            //     use ZoneAttributeDiscriminants::*;
+
+            //     match attr {
+            //         Power | Mute | DoNotDisturb => {
+            //             mqtt.subscribe_json(topic, rumqttc::QoS::AtLeastOnce, |publish: &Publish, payload: Result<bool, PayloadDecodeError>| {
+
+            //             })
+            //         },
+            //         Volume | Treble | Bass | Balance | Source => {
+            //             mqtt.subscribe_json(topic, rumqttc::QoS::AtLeastOnce, |publish: &Publish, payload: Result<u8, PayloadDecodeError>| {
+            //                 //payload
+            //                 //payload.map(a)
+            //             })
+            //         },
+            //         other => unreachable!("{other}: read-only attributes should never have subscription handlers")
+            //     };
+            // }
+
+
 
             // todo: maybe invert this so the enum match is on the outside?
             let handler = {
@@ -143,7 +176,11 @@ fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, Zo
                     let payload = match str::from_utf8(&publish.payload) {
                         Ok(s) => s,
                         Err(err) => {
-                            log::error!("{}: received payload is not valid UTF-8: {}", topic, err);
+                            let mut s = String::from_utf8_lossy(&publish.payload);
+                            let payload = s.to_mut();
+                            payload.truncate(50);
+
+                            log::error!("{}: received payload \"{}\" is not valid UTF-8: {}", topic, payload.escape_default(), err);
                             return;
                         },
                     };
@@ -170,16 +207,15 @@ fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, Zo
                     let attr = match attr {
                         Ok(attr) => attr,
                         Err(err) => {
-                            log::error!("{}: unable to decode payload: {}", topic, err);
+                            log::error!("{}: unable to decode payload \"{}\": {}", topic, payload.escape_default(), err);
                             return;
                         }
                     };
 
-                    send.send(ChannelMessage::ZoneStatusChanged(zone_id, attr)).unwrap(); // todo: handle channel send error?
+                    send.send(ChannelMessage::ChangeZoneAttribute(zone_id, attr)).unwrap(); // todo: handle channel send error?
                 }
             };
 
-            log::debug!("subscribibing to {}", topic);
             mqtt.subscribe(topic, rumqttc::QoS::AtLeastOnce, handler)?;
         }
     }
@@ -223,7 +259,7 @@ fn publish_metadata(mqtt: &mut Client, config: &Config, topic_base: &str) -> Res
 }
 
 /// spawn a worker thread that processes incoming zone attribute adjustments and periodically polls the amp for status updates
-fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, topic_base: &str, recv: Receiver<ChannelMessage>) -> JoinHandle<()> {
+fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, topic_base: &str, recv: Receiver<ChannelMessage>, zones_status: Arc<Mutex<Vec<ZoneStatus>>>) -> JoinHandle<()> {
     // get the zones specifically configured for publish (ignore amps and system)
     let zone_ids = config.zones.keys().filter_map(|z| match z {
         ZoneId::Zone { amp, zone } => Some(ZoneId::Zone { amp: *amp, zone: *zone }),
@@ -259,7 +295,7 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
                 // newer attribute adjustments queued for the same zone overwrite earlier ones.
                 loop {
                     match msg {
-                        Some(ChannelMessage::ZoneStatusChanged(zone_id, attr)) => { adjustments.insert((zone_id, std::mem::discriminant(&attr)), (zone_id, attr)); }
+                        Some(ChannelMessage::ChangeZoneAttribute(zone_id, attr)) => { adjustments.insert((zone_id, std::mem::discriminant(&attr)), (zone_id, attr)); }
                         Some(ChannelMessage::Poison) => { return },
                         None => break
                     }
@@ -279,12 +315,13 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
             }
 
             // get zone statuses for active amps
-            let mut zone_statuses = Vec::new();
+            let mut zones_status = zones_status.lock().expect("lock zones_status");
+            zones_status.clear();
             for amp_id in &amp_ids {
-                zone_statuses.extend(amp.zone_enquiry(*amp_id).unwrap()); // TODO: handle error more gracefully
+                zones_status.extend(amp.zone_enquiry(*amp_id).unwrap()); // TODO: handle error more gracefully
             }
     
-            for zone_status in zone_statuses {
+            for zone_status in zones_status.iter() {
                 // don't publish status updates for disabled zones
                 if !zone_ids.contains(&zone_status.zone_id) {
                     continue;
@@ -298,7 +335,7 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
                         continue;
                     }
 
-                    let topic = ZoneAttributeDiscriminants::from(attr).mqtt_status_topic(&topic_base, &zone_status.zone_id);
+                    let topic = ZoneAttributeDiscriminants::from(attr).mqtt_topic_name(ZoneTopic::Status, &topic_base, &zone_status.zone_id);
 
                     let value = {
                         use ZoneAttribute::*;
@@ -314,7 +351,7 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
                     mqtt.publish_json(topic, rumqttc::QoS::AtLeastOnce, true, value).unwrap(); // TODO: handle error more gracefully
                 }
 
-                previous_statuses.insert(zone_status.zone_id, zone_status);
+                previous_statuses.insert(zone_status.zone_id, zone_status.clone());
             }
         }
     })
@@ -334,9 +371,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // todo: better channel sender/receiver names
     let (send, recv) = mpsc::channel::<ChannelMessage>();
 
-    install_zone_attribute_subscription_handers(&config.amp.zones, &mut mqtt_cm, &topic_base, send.clone())?;
+    let zones_status = Arc::new(Mutex::new(Vec::new()));
 
-    let amp_worker_thread = spawn_amp_worker(&config.amp, amp, mqtt_client.clone(), &topic_base, recv);
+    install_zone_attribute_subscription_handers(&config.amp.zones, &mut mqtt_cm, &topic_base, send.clone())?;
+    install_source_shairport_handlers(&config.amp.zones, &config.amp.sources(), &mut mqtt_cm, zones_status.clone(), send.clone())?;
+
+    let amp_worker_thread = spawn_amp_worker(&config.amp, amp, mqtt_client.clone(), &topic_base, recv, zones_status.clone());
 
     publish_metadata(&mut mqtt_client, &config, &topic_base)?;
 

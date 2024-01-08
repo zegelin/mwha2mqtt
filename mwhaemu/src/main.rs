@@ -12,7 +12,7 @@ mod emu {
     use super::*;
     use std::{collections::HashMap, io::{Read, Write}, str};
 
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     pub struct Zone {
         pub public_announcement: bool,
         pub power: bool,
@@ -24,6 +24,23 @@ mod emu {
         pub balance: u8,
         pub source: u8,
         pub keypad_connected: bool
+    }
+
+    impl Default for Zone {
+        fn default() -> Self {
+            Self {
+                public_announcement: false,
+                power: false,
+                mute: false,
+                do_not_disturb: false,
+                volume: 0,
+                treble: 7,
+                bass: 7,
+                balance: 10,
+                source: 1,
+                keypad_connected:false
+            }
+        }
     }
 
     impl Zone {
@@ -274,6 +291,7 @@ mod repl {
                 str_cell(zone.mute),
                 str_cell(zone.do_not_disturb),
                 str_cell(bar(zone.volume, common::zone::ranges::VOLUME)),
+                int_cell(zone.source)
                 //str_cell(slider(zone.treble + 7, ZoneAttributeDiscriminants::Treble.io_range()))
                 //int_cell(zone.volume)
 
@@ -283,7 +301,7 @@ mod repl {
         println!("{}", Table::new(
             Style::Plain,
             cells,
-            Some(Headers::from(vec!["Zone", "P.A.", "Power", "Mute", "D.N.D.", "Volume"]))
+            Some(Headers::from(vec!["Zone", "P.A.", "Power", "Mute", "D.N.D.", "Volume", "Source"]))
         ).tabulate());
     }
 
@@ -574,9 +592,9 @@ struct Arguments {
     #[arg(default_value = "0.0.0.0:9955")]
     address: String,
 
-    /// number of amplifiers to emulate [1..3]
+    /// number of amplifiers to emulate [1..=3]
     #[arg(long, default_value_t = 1)]
-    #[arg(value_parser = clap::value_parser!(u8).range(1..3))]
+    #[arg(value_parser = clap::value_parser!(u8).range(1..=3))]
     amps: u8
 }
 

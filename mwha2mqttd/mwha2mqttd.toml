@@ -117,29 +117,33 @@ poll_interval = "100 ms"
 [amp.sources]
 # Source config.
 # A table of source ids to their names and settings.
+#
 # Valid source ids are 1 through 6 (inclusive).
+#
 # The value for each entry may either be a (inline) table or string.
-# If a string is specified that string is used as the source name.
+# If a string is specified that string is used as the source name and other attributes are defaulted.
 # Each source has the following attributes:
-# - 'name': string, the source name
-# - 'enabled': bool, source enable state.
+# - 'name': string, the source name.
+# - 'enabled': bool, source enable state, default true.
 #       Clients may choose to respect this value and hide and/or prevent the selection of a disabled source.
 #       This setting does not prevent changing a zones' source to a disabled sources via MQTT, the zone keypads or
 #       the hardware PA trigger (which switches all zones to source 1 temporarily).
-# Sources default to a name of "Source 𝘯" (where 𝘯 is the source number), if left unspecified.
-# Sources default to enabled.
+# - 'shairport_topic_prefix': string, the MQTT topic prefix under which Shairport-Sync publishes its metadata, default none.
+#       If provided, mwha2mqtt will subscribe to the Shairport-Sync volume topic and will sync the volume
+#       of any zone listening to this source to match the AirPlay volume.
+# Sources default to a name of "Source 𝘯" (where 𝘯 is the source number), if a source is left undefined.
 
 1 = "Public Announcement"
 2 = "Living Room TV ARC"
 # 3 = "Master Bedroom TV ARC"
-# 4 = { name = "AirPlay", enabled = false }
+# 4 = { name = "AirPlay", shairport_topic_prefix = "shairport/" }
 # 5 = "Main PC HDMI"
 # 6 = "Rain Machine"
 
 
 [amp.zones]
 # Zone config.
-# A table of zone ids to their names.
+# A table of zone ids to their names and settings.
 # Zones not listed will not report status or accept adjustments via MQTT.
 #
 # A zone id is a numerical 2-digit zone identifier in the format "AZ".
@@ -166,10 +170,17 @@ poll_interval = "100 ms"
 # 10: Virtual amp 1 zone, adjusts all zones on amp 1, no status updates.
 # 20: Virtual amp 2 zone, adjusts all zones on amp 2, no status updates.
 # 30: Virtual amp 3 zone, adjusts all zones on amp 3, no status updates.
+#
+# The value for each entry may either be a (inline) table or string.
+# If a string is specified that string is used as the zone name and other attributes are defaulted.
+# Each zone has the following attributes:
+# - 'name': string, the zone name.
+# - 'shairport.max_volume': int [0..=38] , default 38.
+# - 'shairport.volume_offset': int, a volume offset to apply (may be positive or negative), default 0;
 
 00 = "Whole Home Audio"
 10 = "Master Amp"
-11 = "Study"
+11 = { name = "Study", shairport.max_volume = 20 }
 12 = "Living Room"
 13 = "Alfresco"
 # 14 = "Master Bedroom"

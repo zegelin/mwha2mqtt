@@ -69,6 +69,11 @@ impl ZoneAttribute {
     }
 }
 
+pub enum ZoneTopic {
+    Set,
+    Status,
+}
+
 impl ZoneAttributeDiscriminants {
     pub fn read_only(&self) -> bool {
         use ZoneAttributeDiscriminants::*;
@@ -80,14 +85,15 @@ impl ZoneAttributeDiscriminants {
         }
     }
 
-    pub fn mqtt_set_topic(&self, topic_base: &str, zone: &ZoneId) -> String {
-        let attr_name = self.to_string().to_kebab_case();
-        format!("{}set/zone/{}/{}", topic_base, zone, attr_name)
-    }
+    pub fn mqtt_topic_name(&self, topic: ZoneTopic, topic_base: &str, zone: &ZoneId) -> String {
+        let topic_name = match topic {
+            ZoneTopic::Set => "set",
+            ZoneTopic::Status => "status",
+        };
 
-    pub fn mqtt_status_topic(&self, topic_base: &str, zone: &ZoneId) -> String {
         let attr_name = self.to_string().to_kebab_case();
-        format!("{}status/zone/{}/{}", topic_base, zone, attr_name)
+
+        format!("{topic_base}{topic_name}/zone/{zone}/{attr_name}")
     }
 }
 

@@ -22,9 +22,16 @@ pub trait Port: Read + Write + Send {}
 impl Port for TcpStream {}
 
 
+#[derive(Clone)]
 pub struct ZoneStatus {
     pub zone_id: ZoneId,
-    pub attributes: Vec<ZoneAttribute>
+    pub attributes: Vec<ZoneAttribute>,
+}
+
+impl ZoneStatus {
+    pub fn matches(&self, match_attr: ZoneAttribute) -> bool {
+        self.attributes.iter().any(|attr| *attr == match_attr)
+    }
 }
 
 

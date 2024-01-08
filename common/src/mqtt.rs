@@ -1,6 +1,7 @@
-use std::{sync::{Arc, Mutex}, collections::HashMap, thread::{self, JoinHandle}, fs::File, io::BufReader, env, path::{Path, PathBuf}, any};
+use std::{sync::{Arc, Mutex}, collections::HashMap, thread::{self, JoinHandle}, fs::File, io::{BufReader}, env, path::{Path, PathBuf}, any, str::Utf8Error, fmt::Display};
 use std::str;
 use anyhow::{bail, Context};
+use bytes::Bytes;
 use crossbeam_channel::{Sender, Receiver, select};
 use log::{warn, error, info};
 use rumqttc::{Client, Publish, Connection, Event, Packet, MqttOptions, tokio_rustls::rustls::{RootCertStore, Certificate, ClientConfig, PrivateKey}, ConnectionError, Subscribe};
@@ -20,6 +21,47 @@ impl PublishJson for Client {
         S: Into<String>
     {
         self.publish(topic, qos, retain, value.to_string())
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum PayloadDecodeError {
+    Utf8Error {
+        topic: String,
+        payload: Bytes,
+        source: Utf8Error
+    },
+    // {}:  \"{}\" is not valid UTF-8: {}
+
+    JsonError {
+        topic: String,
+        payload: Bytes,
+        source: serde_json::Error
+    }
+}
+
+impl Display for PayloadDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn printable_payload<'A>(p: &Bytes) -> String {
+            let mut p = String::from_utf8_lossy(p);
+
+            // if p.len() > 50 {
+            //     p = 
+            // }
+
+            p.escape_default().to_string()
+        }
+
+        match self {
+            PayloadDecodeError::Utf8Error { topic, payload, source } => {
+                let payload = printable_payload(payload);
+                write!(f, "{topic}: received payload \"{payload}\" is not valid UTF-8: {source}")
+            }
+            PayloadDecodeError::JsonError { topic, payload, source } => {
+                let payload = printable_payload(payload);
+                write!(f, "{topic}: received payload \"{payload}\" is not valid JSON: {source}")
+            },
+        }
     }
 }
 
@@ -139,48 +181,63 @@ impl MqttConnectionManager {
 
     pub fn subscribe<F, S>(&mut self, topic: S, qos: rumqttc::QoS, handler: F) -> anyhow::Result<(), rumqttc::ClientError>
     where
-        F: Fn(&Publish),
-        F: Send + 'static,
+        F: Fn(&Publish) + Send + 'static,
         S: Into<String>
     {
         let topic = topic.into();
 
-        log::debug!("Subscribe to {}", topic);
+        log::info!("subscribing to MQTT topic {}", topic);
 
         self.outgoing_topic_handlers_send.send((topic.clone(), Box::new(handler))).expect("send on outgoing_topic_handlers_send");
         self.client.subscribe(topic, qos)
     }
 
-    pub fn subscribe_json<T, F, S>(&mut self, topic: S, qos: rumqttc::QoS, handler: F) -> Result<(), rumqttc::ClientError>
+    pub fn subscribe_utf8<F, S>(&mut self, topic: S, qos: rumqttc::QoS, handler: F) -> Result<(), rumqttc::ClientError>
     where
-        T: DeserializeOwned,
-        F: Fn(&Publish, T), // TODO: change T to Result<T> so that errors can be propagated to handlers
-        F: Send + 'static,
+        F: Fn(&Publish, Result<&str, PayloadDecodeError>) + Send + 'static,
         S: Into<String>
     {
-        
         let topic = topic.into();
 
         let handler = {
             let topic = topic.clone();
 
             move |publish: &Publish|  {
-                // fn parse_payload<T: DeserializeOwned>(publish: &Publish) -> anyhow::Result<T> {
-                //     let payload = str::from_utf8(&publish.payload)?;
-                //     Ok(serde_json::from_str(payload)?)
-                    
-                // }
-                
+                let payload = str::from_utf8(&publish.payload).map_err(|err| {
+                    PayloadDecodeError::Utf8Error {
+                        topic: topic.clone(),
+                        payload: publish.payload.clone(),
+                        source: err
+                    }
+                });
 
-                let payload = match str::from_utf8(&publish.payload) {
-                    Ok(s) => s,
-                    Err(err) => {                        
-                        log::error!("{}: received payload is not valid UTF-8: {}", topic, err);
-                        return;
-                    },
-                };
-    
-                let payload: T = serde_json::from_str(payload).unwrap();
+                handler(publish, payload)
+            }
+        };
+
+        self.subscribe(topic, qos, handler)
+    }
+
+    pub fn subscribe_json<T, F, S>(&mut self, topic: S, qos: rumqttc::QoS, handler: F) -> Result<(), rumqttc::ClientError>
+    where
+        T: DeserializeOwned,
+        F: Fn(&Publish, Result<T, PayloadDecodeError>) + Send + 'static,
+        S: Into<String>
+    {
+        let topic = topic.into();
+
+        let handler = {
+            let topic = topic.clone();
+
+            move |publish: &Publish|  {
+                let payload = serde_json::from_slice(&publish.payload[..]).map_err(|err| {
+                    PayloadDecodeError::JsonError {
+                        topic: topic.clone(),
+                        payload: publish.payload.clone(),
+                        source: err
+                    }
+                });
+
                 handler(publish, payload);
             }
         };
@@ -193,8 +250,6 @@ impl MqttConnectionManager {
         S: Into<String>
     {
         todo!();
-        
-        self.client.unsubscribe(topic)
     }
 }
 
