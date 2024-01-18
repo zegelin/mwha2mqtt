@@ -1,8 +1,8 @@
 # mwha2mqtt example config
 #
-# Defaults are shown commented out.
+# Defaults are shown commented out (unless otherwise noted).
 #
-# Settings of type Duration:
+# Settings of type Duration/Interval:
 # Durations are defined as a TOML string with format: "<value><suffix>".
 # Whitespace may be included between "value" and "suffix".
 # Various suffixes are supported, including "s"/"sec"/"second" and "ms"/"msec" (for milliseconds).
@@ -11,7 +11,7 @@
 [logging]
 
 [port.serial]
-# The serial port device file path (i.e., /dev/ttyUSB0).
+# The serial port device file path (i.e., /dev/ttyUSB0), string path.
 device = "/dev/ttyUSB1"
 
 # The serial port baud rate.
@@ -27,17 +27,19 @@ device = "/dev/ttyUSB1"
 # "max" is equivalent to 230400.
 #adjust_baud =  "off"
 
-# Whether to reset the device and port baud rate to the original (detected) rate on exit.
+# Whether to reset the device and port baud rate to the original (detected) rate on exit, bool.
 #reset_baud = true
 
-# Serial read timeout
+# Serial read timeout, duration.
 #read_timeout = 1 sec
 
 
 #[port.tcp]
-#url = "raw://localhost:88"
+# URL of the remote serial port to connect to.
+# Only valid protocol is "raw": raw serial port data is sent over the socket (no control data present).
+#url = "raw://localhost:9955"
 
-# network read timeout
+# Network read timeout, duration.
 #read_timeout = 1
 
 
@@ -76,7 +78,7 @@ url = "mqtt://localhost"
 # When true the host in the MQTT URL is interpreted as a domain, and a DNS query is made against that domain for a SRV record of type
 # _mqtt._tcp ('mqtt' scheme) or _secure-mqtt._tcp ('mqtts' scheme).
 # TODO: support for this is currently not implemented
-srv_lookup = false
+#srv_lookup = false
 
 
 # The following paths may start with "$CREDENTIALS_DIRECTORY" to reference certificate/private key files
@@ -85,7 +87,7 @@ srv_lookup = false
 # Path to a file of concatenated CA certificates (in PEM format).
 # Only used for mqtts connections.
 # Leave unset to use the system default CA.
-ca_certs = "foo.pem"
+#ca_certs = ""
 
 # Path to the client certificate chain file (in PEM format).
 # If specified, enables client certificate authentication.
@@ -100,13 +102,13 @@ ca_certs = "foo.pem"
 #client_key = "/path/to/client.pem"
 
 [amp]
-# The interval between each poll to the amp for zone status information.
+# The interval between each poll to the amp for zone status information, interval.
 # Lower values reduce the delay between adjusting zone attributes via physical keypads and MQTT clients receiving these
 # updates, but will result in increased serial traffic and more frequent MQTT messages being sent when keypads are used.
 # mwha2mqttd does not publish zone attributes that have not changed since the last publish.
 poll_interval = "100 ms"
 
-# Amplifier metatdata.
+# Amplifier metatdata, string.
 # This data is optional and arbitrary, but can be customized so that clients (such as mwhactl, mwhamixer and mwha-homekit)
 # display the right values.
 #manufacturer = "Monoprice"
@@ -121,16 +123,17 @@ poll_interval = "100 ms"
 # Valid source ids are 1 through 6 (inclusive).
 #
 # The value for each entry may either be a (inline) table or string.
-# If a string is specified that string is used as the source name and other attributes are defaulted.
+# If a string is specified it is used as the source name and all other attributes are defaulted.
 # Each source has the following attributes:
-# - 'name': string, the source name.
-# - 'enabled': bool, source enable state, default true.
+# - 'name': the source name, string.
+# - 'enabled': source enable state, bool, default true.
 #       Clients may choose to respect this value and hide and/or prevent the selection of a disabled source.
-#       This setting does not prevent changing a zones' source to a disabled sources via MQTT, the zone keypads or
-#       the hardware PA trigger (which switches all zones to source 1 temporarily).
-# - 'shairport_topic_prefix': string, the MQTT topic prefix under which Shairport-Sync publishes its metadata, default none.
-#       If provided, mwha2mqtt will subscribe to the Shairport-Sync volume topic and will sync the volume
+#       This setting does not prevent changing a zones' source to a disabled source via MQTT, the zone keypads or
+#       the hardware PA trigger (which switches all zones to source 1 while triggered).
+# - 'shairport.volume_topic': the MQTT topic under which Shairport Sync publishes its volume control data, string, default none.
+#       If provided, mwha2mqttd will subscribe to this topic and will sync the volume
 #       of any zone listening to this source to match the AirPlay volume.
+#
 # Sources default to a name of "Source 𝘯" (where 𝘯 is the source number), if a source is left undefined.
 
 1 = "Public Announcement"
@@ -172,11 +175,11 @@ poll_interval = "100 ms"
 # 30: Virtual amp 3 zone, adjusts all zones on amp 3, no status updates.
 #
 # The value for each entry may either be a (inline) table or string.
-# If a string is specified that string is used as the zone name and other attributes are defaulted.
+# If a string is specified it is used as the zone name and all other attributes are defaulted.
 # Each zone has the following attributes:
-# - 'name': string, the zone name.
-# - 'shairport.max_volume': int [0..=38] , default 38.
-# - 'shairport.volume_offset': int, a volume offset to apply (may be positive or negative), default 0;
+# - 'name': the zone name, string.
+# - 'shairport.max_volume': int [0..=38], defaults to global `shairport.max_zone_volume`.
+# - 'shairport.volume_offset': int, defaults to global  `shairport.zone_volume_offset`.   
 
 00 = "Whole Home Audio"
 10 = "Master Amp"
@@ -186,3 +189,12 @@ poll_interval = "100 ms"
 # 14 = "Master Bedroom"
 # 15 = "Guest Bedroom"
 # 16 = "Office"
+
+
+[shairport]
+# Maximum zone volume mapping to AirPlay max volume, int [0..=38].
+# max_zone_volume = 38
+
+# Volume offset to apply to AirPlay volume adjustments, int
+# Useful to equalise AirPlay volume across multiple zones.
+# zone_volume_offset = 0

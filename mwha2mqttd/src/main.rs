@@ -131,14 +131,14 @@ fn connect_amp(config: &Config) -> Result<Amp> {
     Ok(Amp::new(port)?)
 }
 
-pub enum ChannelMessage {
+pub enum AmpControlChannelMessage {
     ChangeZoneAttribute(ZoneId, ZoneAttribute),
     Poison
 }
 
 
 /// install zone attribute mqtt subscriptons
-fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, ZoneConfig>, mqtt: &mut MqttConnectionManager, topic_base: &str, send: Sender<ChannelMessage>) -> Result<()> {
+fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, ZoneConfig>, mqtt: &mut MqttConnectionManager, topic_base: &str, send: Sender<AmpControlChannelMessage>) -> Result<()> {
     for (&zone_id, _) in zones_config {
         for attr in ZoneAttributeDiscriminants::iter() {
             // don't subscribe/install handlers for read-only attributes
@@ -212,7 +212,7 @@ fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, Zo
                         }
                     };
 
-                    send.send(ChannelMessage::ChangeZoneAttribute(zone_id, attr)).unwrap(); // todo: handle channel send error?
+                    send.send(AmpControlChannelMessage::ChangeZoneAttribute(zone_id, attr)).unwrap(); // todo: handle channel send error?
                 }
             };
 
@@ -259,8 +259,8 @@ fn publish_metadata(mqtt: &mut Client, config: &Config, topic_base: &str) -> Res
 }
 
 /// spawn a worker thread that processes incoming zone attribute adjustments and periodically polls the amp for status updates
-fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, topic_base: &str, recv: Receiver<ChannelMessage>, zones_status: Arc<Mutex<Vec<ZoneStatus>>>) -> JoinHandle<()> {
-    // get the zones specifically configured for publish (ignore amps and system)
+fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, topic_base: &str, recv: Receiver<AmpControlChannelMessage>, zones_status: Arc<Mutex<Vec<ZoneStatus>>>) -> JoinHandle<()> {
+    // get the zones specifically configured for publish (ignore amp and system zones)
     let zone_ids = config.zones.keys().filter_map(|z| match z {
         ZoneId::Zone { amp, zone } => Some(ZoneId::Zone { amp: *amp, zone: *zone }),
         _ => None,
@@ -285,8 +285,8 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
                 // if a timeout occurs do a zone status refresh anyway (poll the amp)
                 let mut msg = match recv.recv_timeout(poll_interval) {
                     Ok(msg) => Some(msg),
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None, // timeout waiting for command, refresh zone status anyway
-                    Err(other) => panic!("got other {:?}", other)
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None, // timeout waiting for message, refresh zone status anyway
+                    Err(other) => panic!("recv_timeout error: {:?}", other)
                 };
 
                 // drain the channel.
@@ -295,15 +295,15 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
                 // newer attribute adjustments queued for the same zone overwrite earlier ones.
                 loop {
                     match msg {
-                        Some(ChannelMessage::ChangeZoneAttribute(zone_id, attr)) => { adjustments.insert((zone_id, std::mem::discriminant(&attr)), (zone_id, attr)); }
-                        Some(ChannelMessage::Poison) => { return },
+                        Some(AmpControlChannelMessage::ChangeZoneAttribute(zone_id, attr)) => { adjustments.insert((zone_id, std::mem::discriminant(&attr)), (zone_id, attr)); }
+                        Some(AmpControlChannelMessage::Poison) => { return },
                         None => break
                     }
 
                     msg = match recv.try_recv() {
                         Ok(msg) => Some(msg),
                         Err(std::sync::mpsc::TryRecvError::Empty) => None,
-                        Err(other) => panic!("got other {:?}", other)
+                        Err(other) => panic!("try_recv error: {:?}", other)
                     };
                 }
             }
@@ -314,19 +314,17 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
                 amp.set_zone_attribute(*zone_id, *attr).unwrap(); // TODO: handle error more gracefully
             }
 
-            // get zone statuses for active amps
+            // get zone statuses from active amps
             let mut zones_status = zones_status.lock().expect("lock zones_status");
             zones_status.clear();
             for amp_id in &amp_ids {
-                zones_status.extend(amp.zone_enquiry(*amp_id).unwrap()); // TODO: handle error more gracefully
+                let enquiry_result = amp.zone_enquiry(*amp_id).unwrap(); // TODO: handle error more gracefully
+
+                // exclude disabled zones
+                zones_status.extend(enquiry_result.into_iter().filter(|z| zone_ids.contains(&z.zone_id))); 
             }
     
             for zone_status in zones_status.iter() {
-                // don't publish status updates for disabled zones
-                if !zone_ids.contains(&zone_status.zone_id) {
-                    continue;
-                }
-
                 let previous_status = previous_statuses.get(&zone_status.zone_id);
 
                 for attr in &zone_status.attributes {
@@ -362,21 +360,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     SimpleLogger::init(LevelFilter::Info, simplelog::Config::default()).unwrap();
 
-    let config = config::load_config(&args.config_file).with_context(|| format!("failed to load config file: {}", args.config_file.to_string_lossy()))?;
+    let config = config::load_config(&args.config_file).context("failed to load config")?;
 
     let (mut mqtt_client, mut mqtt_cm, topic_base) = connect_mqtt(&config.mqtt).context("failed to establish MQTT connection")?;
 
     let amp = connect_amp(&config).context("failed to establish amp connection")?;
 
-    // todo: better channel sender/receiver names
-    let (send, recv) = mpsc::channel::<ChannelMessage>();
-
+    let (amp_ctrl_ch_send, amp_ctl_ch_recv) = mpsc::channel::<AmpControlChannelMessage>();
     let zones_status = Arc::new(Mutex::new(Vec::new()));
 
-    install_zone_attribute_subscription_handers(&config.amp.zones, &mut mqtt_cm, &topic_base, send.clone())?;
-    install_source_shairport_handlers(&config.amp.zones, &config.amp.sources(), &mut mqtt_cm, zones_status.clone(), send.clone())?;
+    install_zone_attribute_subscription_handers(&config.amp.zones, &mut mqtt_cm, &topic_base, amp_ctrl_ch_send.clone())?;
+    install_source_shairport_handlers(&config.shairport, &config.amp.zones, &config.amp.sources(), &mut mqtt_cm, zones_status.clone(), amp_ctrl_ch_send.clone())?;
 
-    let amp_worker_thread = spawn_amp_worker(&config.amp, amp, mqtt_client.clone(), &topic_base, recv, zones_status.clone());
+    let amp_worker_thread = spawn_amp_worker(&config.amp, amp, mqtt_client.clone(), &topic_base, amp_ctl_ch_recv, zones_status.clone());
 
     publish_metadata(&mut mqtt_client, &config, &topic_base)?;
 
@@ -389,7 +385,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     mqtt_client.disconnect()?;
 
-    send.send(ChannelMessage::Poison)?;
+    amp_ctrl_ch_send.send(AmpControlChannelMessage::Poison)?;
     amp_worker_thread.join().unwrap();
 
 

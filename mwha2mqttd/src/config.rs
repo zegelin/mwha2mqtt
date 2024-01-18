@@ -140,6 +140,11 @@ pub struct TcpPortConfig {
     pub url: url::Url
 }
 
+#[derive(Clone, Deserialize, Debug, Default)]
+pub struct SourceShairportConfig {
+    pub volume_topic: Option<String>,
+}
+
 
 #[derive(Clone, Deserialize, Debug)]
 pub struct SourceConfig {
@@ -148,7 +153,7 @@ pub struct SourceConfig {
     #[serde(default = "SourceConfig::default_enabled")]
     pub enabled: bool,
 
-    pub shairport_topic_prefix: Option<String>
+    pub shairport: SourceShairportConfig
 }
 
 impl SourceConfig {
@@ -160,7 +165,7 @@ impl Default for SourceConfig {
         Self {
             name: Default::default(),
             enabled: Self::default_enabled(),
-            shairport_topic_prefix: None
+            shairport: Default::default()
         }
     }
 }
@@ -176,28 +181,10 @@ impl FromStr for SourceConfig {
     }
 }
 
-#[derive(Clone, Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug, Default)]
 pub struct ZoneShairportConfig {
-    #[serde(default = "ZoneShairportConfig::default_max_volume")]
-    pub max_volume: u8,
-
-    #[serde(default = "ZoneShairportConfig::default_volume_offset")]
-    pub volume_offset: i8
-}
-
-impl ZoneShairportConfig {
-    fn default_max_volume() -> u8 { *ranges::VOLUME.end() }
-
-    fn default_volume_offset() -> i8 { 0 }
-}
-
-impl Default for ZoneShairportConfig {
-    fn default() -> Self {
-        Self {
-            max_volume: Self::default_max_volume(),
-            volume_offset: Self::default_volume_offset()
-        }
-    }
+    pub max_volume: Option<u8>,
+    pub volume_offset: Option<i8>
 }
 
 
@@ -291,10 +278,29 @@ pub enum PortConfig {
 }
 
 
-// #[derive(Clone, Deserialize, Debug)]
-// pub struct ShairportConfig {
-//     pub max_zone_volume: u8,
-// }
+#[derive(Clone, Deserialize, Debug)]
+pub struct ShairportConfig {
+    #[serde(default = "ShairportConfig::default_max_zone_volume")]
+    pub max_zone_volume: u8,
+
+    #[serde(default = "ShairportConfig::default_zone_volume_offset")]
+    pub zone_volume_offset: i8
+}
+
+impl ShairportConfig {
+    fn default_max_zone_volume() -> u8 { *ranges::VOLUME.end() }
+
+    fn default_zone_volume_offset() -> i8 { 0 }
+}
+
+impl Default for ShairportConfig {
+    fn default() -> Self {
+        Self {
+            max_zone_volume: Self::default_max_zone_volume(),
+            zone_volume_offset: Self::default_zone_volume_offset()
+        }
+    }
+}
 
 
 #[derive(Clone, Deserialize, Debug)]
@@ -307,7 +313,7 @@ pub struct Config {
 
     pub amp: AmpConfig,
 
-   // pub shairport: ShairportConfig,
+    pub shairport: ShairportConfig,
 }
 
 

@@ -14,13 +14,13 @@ The project has been rewritten in Rust!
 The old Python version can be found on the `python` branch.
 
 ## Features
-- Publishes zone status/attributes to zone-attribute-specific MQTT topics.
-- Subscribes to zone-specific MQTT topics for modification of zone attributes.
+- Zone attribute published and adjustable over MQTT.
 - Communication via physical TTY or COM port (such as a USB<->RS232 adapter) or raw serial-over-TCP (RFC2217 not supported).
+- [Shairport Sync](https://github.com/mikebrady/shairport-sync) (AirPlay) volume control integration.
 
 ## Features yet to be implemented
 - A basic cli client tool (`mwha-cli`).
-- A more feature-full GUI mixer client.
+- A GUI mixer client.
 - Automatic HomeKit and HomeAssistant integration.
 - Automatic serial baud-rate detection and negotiation (for physical ports) (code is there, but doesn't work).
 - MQTT SRV support.
@@ -51,7 +51,7 @@ The default config file shows all the available settings and documentation is pr
 The location and name of this config file varies depending on how _mwha2mqtt_ is installed.
 
 ### Linux
-On most Linux-based systems, packaged versions of `mwha2mqttd` reads its configuration from `/etc/mwha2mqttd/mwha2mqttd.toml`.
+On most Linux-based systems, packaged versions of `mwha2mqttd` reads its configuration from `/etc/mwha2mqttd.conf`.
 
 
 
@@ -70,11 +70,11 @@ The JSON data type of the message clients should expect to send/receive on a par
 The following topics are for clients to receive metadata and updates about the configured amps, zones and sources.
 
 Publishing messages to these topics is handled by `mwha2mqttd`.
-Any messages published by other clients will be ignored by `mwha2mqttd`.
+Any messages published by other clients will be ignored by `mwha2mqttd`
 
-Messages published to these topics will have their retain flag set.
+Messages published to these topics by `mwha2mqttd` will have their retain flag set.
 A message to each topic will be published once when `mwha2mqttd` starts, then whenever a zone attribute changes (after a successful 
-status query to the amp over RS232).
+status query to the amp).
 
 | Topic | Data Type | Description |
 |-------|-----------|-------------|
@@ -83,13 +83,13 @@ status query to the amp over RS232).
 | `mwha/status/amp/manufacturer` | String | Amplifier manufacturer, as defined in the config. |
 | `mwha/status/amp/serial` | String | Amplifier serial number, as defined in the config. |
 | `mwha/status/source/<source-id>/<attribute>` | _Various_ | Source status and metadata.<br><br>See [Source Attribute Topics](#source-attribute-toptics) below for details. |
-| `mwha/status/zones` | String array | An array of configured zone IDs. |
+| `mwha/status/zones` | String array | An array of configured zone IDs.<br><br>Clients can use this to determine which zone topics are valid. |
 | `mwha/status/zone/<zone-id>/<attribute>`| _Various_ | Zone status and metadata.<br><br>See [Zone Attribute Topics](#zone-attribute-topics)below for details. 
 
 ### Publish-only Topics
 The following topics are for clients to alter the attributes of configured zones.
 
-Publishing a message to topic for an unconfigured zone is a no-op. Invalid values will be logged but otherwise are a no-op.
+Publishing a message to topic for an unconfigured zone is a no-op. Invalid values will be logged but are otherwise a no-op.
 
 | Topic | Data Type | Description |
 |-------|-----------|-------------|
@@ -119,7 +119,7 @@ For the meaning of `<zone-id>` and `<attribute>`, see [Zone IDs](#zone-ids) and 
 **Note**: Zones must be first configured in the config file before `mwha2mqttd` will publish status and handle adjustments for them.
 Sending adjustments to an unconfigured zone is a no-op.
 The `mwha/status/zones` topic will contain a list of configured zone IDs.
-It is recommended that clients subscribe to this topic to discover the list of configured zones.
+It is recommended that clients subscribe to this topic to discover the list of configured/active zones.
 
 #### Zone IDs
 
@@ -165,8 +165,65 @@ Attributed marked _R/W_ can be adjusted via the `set/` topic.
 | `mute` | Boolean | R/W | Zone mute status.<br/><br/>`true` = zone is muted.<br/>`false` = zone is un-muted. | 
 | `do-not-disturb` | Boolean | R/W | Zone do not disturb status.<br/><br/>`true` = DND enabled.<br/>`false` = zone is un-muted.
 | `volume` | Integer | R/W | Zone volume.<br/><br/>Value ranges from `0` to `38`, inclusive.
-| `treble` | Integer | R/W | Zone treble adjustment.<br/><br/>Value ranges from `0` to `14`, inclusive.<br>`0` = maximum treble reduction.<br>`7` = flat (no adjustment).<br>`14` = maximum treble boost. |
-| `bass` | Integer | R/W | Zone bass adjustment.<br/><br/>Value ranges from `0` to `14`, inclusive.<br>`0` = maximum bass reduction.<br>`7` = flat (no adjustment).<br>`14` = maximum bass boost. |
-| `balance` | Integer | R/W | Zone balance adjustment.<br/><br/>Value ranges from `0` to `20`, inclusive.<br>`0` = far left.<br>`7` = centre (no adjustment).<br>`14` = far right. |
+| `treble` | Integer | R/W | Zone treble adjustment.<br/><br/>Value ranges from `0` to `14`, inclusive.<br><br>`0` = maximum treble reduction.<br>`7` = flat (no adjustment).<br>`14` = maximum treble boost. |
+| `bass` | Integer | R/W | Zone bass adjustment.<br/><br/>Value ranges from `0` to `14`, inclusive.<br><br>`0` = maximum bass reduction.<br>`7` = flat (no adjustment).<br>`14` = maximum bass boost. |
+| `balance` | Integer | R/W | Zone balance adjustment.<br/><br/>Value ranges from `0` to `20`, inclusive<br><br>`0` = 100% left.<br>`7` = centre (no adjustment).<br>`14` = 100% right. |
 | `source` | Integer | R/W | Zone active source.<br/><br/>Value ranges from `1` to `6`, inclusive.<br/><br/>This value can be mapped to the source metadata topics (`source/<i>`) for source info. |
 | `keypad-connected` | Boolean | RO | Zone keypad connected status.<br/><br/>`true` = zone keypad connected.<br/>`false` = zone keypad disconnected. |
+
+
+## Shairport Sync Integration
+
+`mwha2mqttd` can integrate with Shairport Sync via MQTT, which allows for volume control of zone(s) from AirPlay clients (such as iOS or macOS). When one or more zones are listening to a designated Shairport Sync source, volume control commands from AirPlay client(s) of that source change the volume of the zones listening to that source.
+
+For example: a PC running Shairport Sync has its S/PDIF optical out connected to the _Source 6_ input on the back of the master amp, and this source is configured in the `mwha2mqttd` configuration as a Shairport Sync source (`shairport.volume_topic` is specified). _Zones 1_ and _4_ are listening to _Source 6_ and an iOS client plays music over AirPlay to the Shairport Sync speaker, hence _Zones 1_ and _4_ hear the music playing from the iOS device. The user adjusts the speaker volume on the iOS device and Shairport Sync publishes volume change metadata MQTT messages. `mwha2mqttd` receives these messages and adjusts the volume of _Zones 1_ and _4_ to match the iOS clients' specified volume.
+
+To use this feature, Shairport Sync must be compiled with MQTT support, and MQTT metadata must be enabled in the `shairport-sync.conf` configuration file. When enabled, Shairport Sync will publish metadata about the current AirPlay stream, including volume level, onto MQTT topics.
+
+### Basic Configuration Steps
+
+1. Connect the hardware, so that the audio output of a device running Shairport Sync is connected to a source on the amp.
+
+2. Compile Shairport Sync with MQTT support and configure it to publish metadata over MQTT.
+
+    See the [Shairport Sync MQTT documenation](https://github.com/mikebrady/shairport-sync/blob/master/MQTT.md) for more info.
+
+    Either the `publish_raw` or `publish_parsed` (or both) option may be used in the Shairport Sync config, as the same volume metadata is published for either option, but note that the volume topic name differs. See below.
+
+    Hint: It's recommened to set the Shairport Sync `ignore_volume_control` option to `"yes"` to disable the built-in software mixing and hardware audio device volume control. Explicitly set the hardware device volume to 100% (0 dB) and let the amp do the volume adjustment.
+
+    Note: if you're running multiple instances of Shairport Sync, ensure that the `topic` configuration option is unique for each instance. 
+
+
+    Example partial `shairport-sync.conf`:
+    ```
+    general = {
+        ⋮
+        name = "Whole-home Audio (Source 6)";
+        ignore_volume_control = "yes";
+        ⋮
+    }
+
+    mqtt = {
+        enabled = "yes";
+        topic = "shairport-ch6"
+        publish_parsed = "yes";
+        ⋮
+    }
+    ```
+
+
+3. Configure source(s) in `mwha2mqttd.conf` to have the appropriate `shairport.volume_topic` to match the hardware configuration.
+
+    When Shairport Sync is configured with:
+    - `publish_parsed = "yes"`, then the `volume_topic` should be of the form `<shairport-topic>/volume`.
+    - `publish_raw = "yes"`, then the `volume_topic` should be of the form `<shairport-topic>/pvol`.
+
+    (where `<shairport-topic>` is the value of `mqtt.topic` in the shairport config)
+
+    Example partial `shairport-sync.conf`:
+    ```
+    [amp.sources]
+    ⋮
+    6 = { name = "AirPlay", shairport.volume_topic = "shairport-ch6/volume" }
+    ```
