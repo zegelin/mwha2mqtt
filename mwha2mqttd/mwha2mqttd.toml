@@ -23,7 +23,7 @@ device = "/dev/ttyUSB1"
 
 # Whether to adjust the amp and port baud rates once connected.
 # One of "off", 9600, 19200, 38400, 57600, 115200, 230400 or "max" can be specified.
-# "off" will disable baudrate adjustment (the specified/detected baud rate will be used (see "baud")).
+# "off" will disable baudrate adjustment (the specified/detected baud rate will be used (see "baud").
 # "max" is equivalent to 230400.
 #adjust_baud =  "off"
 
@@ -134,12 +134,12 @@ poll_interval = "100 ms"
 #       If provided, mwha2mqttd will subscribe to this topic and will sync the volume
 #       of any zone listening to this source to match the AirPlay volume.
 #
-# Sources default to a name of "Source 𝘯" (where 𝘯 is the source number), if a source is left undefined.
+# Sources default to a name of "Source 𝘯" (where 𝘯 is the source id), if a source is left undefined.
 
 1 = "Public Announcement"
 2 = "Living Room TV ARC"
 # 3 = "Master Bedroom TV ARC"
-# 4 = { name = "AirPlay", shairport_topic_prefix = "shairport/" }
+# 4 = { name = "AirPlay", shairport.volume_topic = "shairport/volume" }
 # 5 = "Main PC HDMI"
 # 6 = "Rain Machine"
 
