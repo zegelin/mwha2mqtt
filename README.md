@@ -213,15 +213,15 @@ To use this feature, Shairport Sync must be compiled with MQTT support, and MQTT
     ```
 
 
-3. Configure source(s) in `mwha2mqttd.conf` to have the appropriate `shairport.volume_topic` to match the hardware configuration.
+3. Configure source(s) in `mwha2mqttd.conf` to have the appropriate `shairport.volume_topic` to match the Shairport and hardware configuration.
 
     When Shairport Sync is configured with:
     - `publish_parsed = "yes"`, then the `volume_topic` should be of the form `<shairport-topic>/volume`.
     - `publish_raw = "yes"`, then the `volume_topic` should be of the form `<shairport-topic>/pvol`.
 
-    (where `<shairport-topic>` is the value of `mqtt.topic` in the shairport config)
+    (where `<shairport-topic>` is the value of `mqtt.topic` in the Shairport config)
 
-    Example partial `shairport-sync.conf`:
+    Example partial `mwha2mqttd.conf`:
     ```
     [amp.sources]
     ⋮
