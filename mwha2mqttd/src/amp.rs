@@ -60,7 +60,7 @@ pub fn print_buffer(buffer: &[u8]) {
 }
 
 impl Amp {
-    const END_OF_RESPONSE_MARKER: &[u8] = b"\r\n#";
+    const END_OF_RESPONSE_MARKER: &'static [u8] = b"\r\n#";
 
 	pub fn new(port: Box<dyn Port>) -> Result<Self> {
         let mut amp = Self {
@@ -145,6 +145,7 @@ impl Amp {
         Ok(())
     }
 
+    /// Send a Zone Enquiry command to the master amp requesting the status of the specified zone.
     pub fn zone_enquiry(&mut self, id: ZoneId) -> Result<Vec<ZoneStatus>> {
         if let ZoneId::System = id {
             return id.to_amps().into_iter()
@@ -164,35 +165,36 @@ impl Amp {
         self.exec_command(cmd.as_bytes(), expected_responses)?
             .into_iter()
             .map(|resp| -> Result<ZoneStatus> {
-            let values = resp[1..] // skip leading '>'
-                .chunks_exact(2)
-                .map(|c| -> Result<u8> {
-                    let s = str::from_utf8(c).context("response string not valid UTF-8")?;
+                let values = resp[1..] // skip leading '>'
+                    .chunks_exact(2) // split input into 2-byte chunks
+                    .map(|c| -> Result<u8> {
+                        let s = str::from_utf8(c).context("response string not valid UTF-8")?;
 
-                    Ok(str::parse::<u8>(s).context("failed to parse u8")?)
-                })
-                .collect::<Result<Vec<_>>>()?;
+                        Ok(str::parse::<u8>(s).context("failed to parse u8")?)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
 
-            {
-                use ZoneAttribute::*;
+                {
+                    use ZoneAttribute::*;
 
-                Ok(ZoneStatus {
-                    zone_id: ZoneId::try_from(values[0]).context("invalid zone id received from amp")?,
-                    attributes: vec![
-                        PublicAnnouncement(values[1] != 0),
-                        Power(values[2] != 0),
-                        Mute(values[3] != 0),
-                        DoNotDisturb(values[4] != 0),
-                        Volume(values[5]),
-                        Treble(values[6]),
-                        Bass(values[7]),
-                        Balance(values[8]),
-                        Source(values[9]),
-                        KeypadConnected(values[10] != 0)
-                    ] 
-                })
-            }
-        }).collect()
+                    Ok(ZoneStatus {
+                        zone_id: ZoneId::try_from(values[0]).context("invalid zone id received from amp")?,
+                        attributes: vec![
+                            PublicAnnouncement(values[1] != 0),
+                            Power(values[2] != 0),
+                            Mute(values[3] != 0),
+                            DoNotDisturb(values[4] != 0),
+                            Volume(values[5]),
+                            Treble(values[6]),
+                            Bass(values[7]),
+                            Balance(values[8]),
+                            Source(values[9]),
+                            KeypadConnected(values[10] != 0)
+                        ] 
+                    })
+                }
+            })
+            .collect()
     }
 
     pub fn set_zone_attribute(&mut self, id: ZoneId, attr: ZoneAttribute) -> Result<()> {
@@ -204,24 +206,26 @@ impl Amp {
 
         attr.validate()?;
 
-        let (attr, val) = {
-            use ZoneAttribute::*;
-
-            match attr {
-                Power(v) => ("PR", v as u8),
-                Mute(v) => ("MU", v as u8),
-                DoNotDisturb(v) => ("DT", v as u8),
-                Volume(v) => ("VO", v),
-                Treble(v) => ("TR", v),
-                Bass(v) => ("BS", v),
-                Balance(v) => ("BL", v),
-                Source(v) => ("CH", v),
-                attr => bail!("{} cannot be changed", attr)
-            }
+        // build set zone attribute cmd string
+        let cmd = {
+            let (attr, val) = {
+                use ZoneAttribute::*;
+    
+                match attr {
+                    Power(v) => ("PR", v as u8),
+                    Mute(v) => ("MU", v as u8),
+                    DoNotDisturb(v) => ("DT", v as u8),
+                    Volume(v) => ("VO", v),
+                    Treble(v) => ("TR", v),
+                    Bass(v) => ("BS", v),
+                    Balance(v) => ("BL", v),
+                    Source(v) => ("CH", v),
+                    attr => bail!("{} cannot be changed", attr)
+                }
+            };
+    
+            format!("<{}{}{:02}", id, attr, val)
         };
-
-
-        let cmd = format!("<{}{}{:02}", id, attr, val);
 
         self.exec_command(cmd.as_bytes(), 0)?;
 

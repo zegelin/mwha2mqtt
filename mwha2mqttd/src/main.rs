@@ -167,7 +167,7 @@ fn install_zone_attribute_subscription_handers(zones_config: &HashMap<ZoneId, Zo
 
 
 
-            // todo: maybe invert this so the enum match is on the outside?
+            // todo: use subscribe_json, which requires inverting this so the enum match is on the outside
             let handler = {
                 let topic = topic.clone();
                 let send = send.clone();
@@ -246,7 +246,13 @@ fn publish_metadata(mqtt: &mut Client, config: &Config, topic_base: &str) -> Res
     }
 
     // list of active zones
-    mqtt.publish_json(format!("{}status/zones", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(config.amp.zones.keys().map(|z| z.to_string()).collect::<Vec<_>>()))?;
+    {
+        let zones = config.amp.zones.keys()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+
+        mqtt.publish_json(format!("{}status/zones", topic_base), rumqttc::QoS::AtLeastOnce, true, json!(zones))?;
+    }
 
     // zone metadata
     for (zone_id, zone_config) in &config.amp.zones {
@@ -260,7 +266,7 @@ fn publish_metadata(mqtt: &mut Client, config: &Config, topic_base: &str) -> Res
 
 /// spawn a worker thread that processes incoming zone attribute adjustments and periodically polls the amp for status updates
 fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, topic_base: &str, recv: Receiver<AmpControlChannelMessage>, zones_status: Arc<Mutex<Vec<ZoneStatus>>>) -> JoinHandle<()> {
-    // get the zones specifically configured for publish (ignore amp and system zones)
+    // get the zones specifically configured for publish (ignore amp and system zones in config)
     let zone_ids = config.zones.keys().filter_map(|z| match z {
         ZoneId::Zone { amp, zone } => Some(ZoneId::Zone { amp: *amp, zone: *zone }),
         _ => None,
@@ -290,7 +296,7 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
                 };
 
                 // drain the channel.
-                // mqtt can deliver faster than the serialport can handle and multiple adjustments may have come while processing the last request.
+                // mqtt can deliver faster than the serialport can handle and multiple adjustment messages may have been delivered while processing the last request.
                 // there is no point adjusting the same attribute multiple times.
                 // newer attribute adjustments queued for the same zone overwrite earlier ones.
                 loop {
@@ -316,21 +322,27 @@ fn spawn_amp_worker(config: &AmpConfig, mut amp: Amp, mqtt: rumqttc::Client, top
 
             // get zone statuses from active amps
             let mut zones_status = zones_status.lock().expect("lock zones_status");
+
             zones_status.clear();
+
             for amp_id in &amp_ids {
                 let enquiry_result = amp.zone_enquiry(*amp_id).unwrap(); // TODO: handle error more gracefully
 
-                // exclude disabled zones
-                zones_status.extend(enquiry_result.into_iter().filter(|z| zone_ids.contains(&z.zone_id))); 
+                zones_status.extend(enquiry_result.into_iter()
+                    .filter(|z| zone_ids.contains(&z.zone_id)) // only enclude zones enabled in config
+                ); 
             }
     
+            // publish updates
             for zone_status in zones_status.iter() {
                 let previous_status = previous_statuses.get(&zone_status.zone_id);
 
                 for attr in &zone_status.attributes {
                     // don't publish if zone attribute hasn't changed
-                    if previous_status.map_or(false, |prev_status| prev_status.attributes.iter().any(|prev_attr| *prev_attr == *attr)) {
-                        continue;
+                    if let Some(previous_status) = previous_status {
+                        if previous_status.attributes.iter().any(|prev_attr| *prev_attr == *attr) {
+                            continue;
+                        }
                     }
 
                     let topic = ZoneAttributeDiscriminants::from(attr).mqtt_topic_name(ZoneTopic::Status, &topic_base, &zone_status.zone_id);
@@ -360,19 +372,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     SimpleLogger::init(LevelFilter::Info, simplelog::Config::default()).unwrap();
 
-    let config = config::load_config(&args.config_file).context("failed to load config")?;
+    let config = config::load_config(&args.config_file)
+        .context("failed to load config")?;
 
-    let (mut mqtt_client, mut mqtt_cm, topic_base) = connect_mqtt(&config.mqtt).context("failed to establish MQTT connection")?;
+    let (mut mqtt_client, mut mqtt_cm, topic_base) = connect_mqtt(&config.mqtt)
+        .context("failed to establish MQTT connection")?;
 
-    let amp = connect_amp(&config).context("failed to establish amp connection")?;
+    let amp = connect_amp(&config)
+        .context("failed to establish amp connection")?;
 
-    let (amp_ctrl_ch_send, amp_ctl_ch_recv) = mpsc::channel::<AmpControlChannelMessage>();
+    let (amp_ctrl_send, amp_ctl_recv) = mpsc::channel::<AmpControlChannelMessage>();
     let zones_status = Arc::new(Mutex::new(Vec::new()));
 
-    install_zone_attribute_subscription_handers(&config.amp.zones, &mut mqtt_cm, &topic_base, amp_ctrl_ch_send.clone())?;
-    install_source_shairport_handlers(&config.shairport, &config.amp.zones, &config.amp.sources(), &mut mqtt_cm, zones_status.clone(), amp_ctrl_ch_send.clone())?;
+    install_zone_attribute_subscription_handers(&config.amp.zones, &mut mqtt_cm, &topic_base, amp_ctrl_send.clone())?;
+    install_source_shairport_handlers(&config.shairport, &config.amp.zones, &config.amp.sources(), &mut mqtt_cm, zones_status.clone(), amp_ctrl_send.clone())?;
 
-    let amp_worker_thread = spawn_amp_worker(&config.amp, amp, mqtt_client.clone(), &topic_base, amp_ctl_ch_recv, zones_status.clone());
+    let amp_worker_thread = spawn_amp_worker(&config.amp, amp, mqtt_client.clone(), &topic_base, amp_ctl_recv, zones_status.clone());
 
     publish_metadata(&mut mqtt_client, &config, &topic_base)?;
 
@@ -383,10 +398,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     log::info!("caught shutdown signal");
 
+    amp_ctrl_send.send(AmpControlChannelMessage::Poison)?;
+    amp_worker_thread.join().unwrap();
+
     mqtt_client.disconnect()?;
 
-    amp_ctrl_ch_send.send(AmpControlChannelMessage::Poison)?;
-    amp_worker_thread.join().unwrap();
+    // whan an mqtt error occurs, what happens?
+    // - recover/retry
+    //      for how long, vs bail out and 
 
 
     // exit due to: signal, mqtt error/disconnect, 

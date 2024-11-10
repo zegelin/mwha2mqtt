@@ -160,7 +160,7 @@ impl MqttConnectionManager {
                         Ok(_) => {},
                         Err(e) => {
                             log::error!("mqtt error: {}", e);
-                            errors_send.send(e).expect("send on errors_send");
+                            errors_send.send(e).expect("send on errors_send"); // this blocks if the channel is full!!!
                         },
                     }
                 }

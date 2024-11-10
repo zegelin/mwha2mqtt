@@ -4,7 +4,7 @@ use std::fmt::Display;
 use std::str::FromStr;
 
 use serde::{Serialize, Deserialize};
-use strum_macros::{EnumDiscriminants, Display, EnumVariantNames, EnumIter};
+use strum_macros::{EnumDiscriminants, Display, EnumIter};
 
 use thiserror::Error;
 
@@ -61,7 +61,7 @@ impl ZoneAttribute {
         };
 
         if !range.contains(&v) {
-            Err(ZoneAttributeError::ValueOutOfRange{ attr: *self, range: range })
+            Err(ZoneAttributeError::ValueOutOfRange{ attr: *self, range })
             
         } else {
             Ok(())
@@ -145,7 +145,7 @@ impl FromStr for ZoneId {
     type Err = ZoneIdError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let i = s.parse::<u8>().map_err(|e| ZoneIdError::ParseFailure{ value: s.to_string(), source: e })?;
+        let i = s.parse::<u8>().map_err(|e| ZoneIdError::ParseFailure { value: s.to_string(), source: e })?;
         ZoneId::try_from(i)
     }
 }

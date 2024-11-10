@@ -153,6 +153,7 @@ pub struct SourceConfig {
     #[serde(default = "SourceConfig::default_enabled")]
     pub enabled: bool,
 
+    #[serde(default)]
     pub shairport: SourceShairportConfig
 }
 
@@ -313,6 +314,7 @@ pub struct Config {
 
     pub amp: AmpConfig,
 
+    #[serde(default)]
     pub shairport: ShairportConfig,
 }
 
